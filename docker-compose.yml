@@ -22,7 +22,7 @@ services:
     environment:
       DATABASE_URL: postgres://slinger:slinger@postgres:5432/slinger?sslmode=disable
       SLINGER_API_ADDR: :8080
-      SLINGER_ADMIN_EMAIL: admin@slinger.local
+      SLINGER_ADMIN_EMAIL: henokm@act.com.et
       SLINGER_ADMIN_NAME: Bootstrap Admin
       SLINGER_BASE_URL: http://localhost:8080
       SLINGER_ADMIN_DASHBOARD_URL: http://localhost:5173
@@ -60,8 +60,6 @@ services:
       VITE_API_BASE_URL: http://localhost:8080
     depends_on:
       - api
-    ports:
-      - "5173:4173"
 
   proxy:
     image: caddy:2-alpine

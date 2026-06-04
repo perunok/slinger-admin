@@ -1,0 +1,102 @@
+openapi: 3.1.0
+info:
+  title: Slinger Cloud API
+  version: 0.1.0
+servers:
+  - url: /v1
+paths:
+  /auth/device/start:
+    post:
+      requestBody:
+        required: true
+      responses:
+        "200":
+          description: Device flow started
+  /auth/browser/start:
+    get:
+      responses:
+        "200":
+          description: Browser session start metadata
+  /auth/browser/login:
+    post:
+      responses:
+        "200":
+          description: Browser session created
+  /auth/browser/logout:
+    post:
+      responses:
+        "200":
+          description: Browser session cleared
+  /auth/device/poll:
+    post:
+      responses:
+        "200":
+          description: Device poll response
+  /auth/refresh:
+    post:
+      responses:
+        "200":
+          description: Refreshed tokens
+  /me:
+    get:
+      responses:
+        "200":
+          description: Current user profile
+  /workspaces:
+    get:
+      responses:
+        "200":
+          description: Workspace list
+    post:
+      responses:
+        "201":
+          description: Workspace created
+  /workspaces/{workspace_id}:
+    get:
+      parameters:
+        - in: path
+          name: workspace_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Workspace details
+    patch:
+      responses:
+        "200":
+          description: Workspace updated
+  /workspaces/{workspace_id}/members:
+    get:
+      responses:
+        "200":
+          description: Members list
+  /workspaces/{workspace_id}/invites:
+    post:
+      responses:
+        "201":
+          description: Invite created
+  /invites/{invite_id}/accept:
+    post:
+      responses:
+        "200":
+          description: Invite accepted
+  /workspaces/{workspace_id}/join-requests:
+    post:
+      responses:
+        "201":
+          description: Join request created
+  /workspaces/{workspace_id}/collections:
+    get:
+      responses:
+        "200":
+          description: Collections list
+    post:
+      responses:
+        "201":
+          description: Collection created
+  /workspaces/{workspace_id}/sync/push:
+    post:
+      responses:
+        "200":
+          description: Sync pushed

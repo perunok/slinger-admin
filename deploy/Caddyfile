@@ -1,0 +1,13 @@
+{
+  auto_https off
+}
+
+:80 {
+  route /api/* {
+    uri strip_prefix /api
+    reverse_proxy api:8080
+  }
+
+  reverse_proxy admin-dashboard:4173
+}
+

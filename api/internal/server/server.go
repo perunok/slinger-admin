@@ -105,7 +105,7 @@ func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) {
 	if origin == "" {
 		return
 	}
-	allowed := env("SLINGER_ADMIN_DASHBOARD_URL", "http://localhost:5173")
+	allowed := env("SLINGER_ADMIN_DASHBOARD_URL", "http://localhost:5174")
 	if origin != allowed {
 		return
 	}

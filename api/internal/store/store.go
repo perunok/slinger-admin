@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -39,6 +41,7 @@ type Store struct {
 	db     *pgxpool.Pool
 
 	users                  map[string]*model.User
+	usersByUsername        map[string]string
 	usersByEmail           map[string]string
 	workspaces             map[string]*model.Workspace
 	memberships            map[string]*model.Membership
@@ -65,6 +68,7 @@ func New() *Store {
 		secret:                 os.Getenv("SLINGER_SIGNING_SECRET"),
 		now:                    time.Now,
 		users:                  map[string]*model.User{},
+		usersByUsername:        map[string]string{},
 		usersByEmail:           map[string]string{},
 		workspaces:             map[string]*model.Workspace{},
 		memberships:            map[string]*model.Membership{},
@@ -100,13 +104,7 @@ func New() *Store {
 		}
 	}
 
-	adminEmail := env("SLINGER_ADMIN_EMAIL", "admin@slinger.local")
-	adminName := env("SLINGER_ADMIN_NAME", "Bootstrap Admin")
-	if _, err := s.UserByEmail(adminEmail); err != nil {
-		admin := s.createUserLocked(adminEmail, adminName, model.PlatformRoleSuperAdmin)
-		s.persistUser(context.Background(), admin)
-		s.logLocked(admin.ID, "platform.bootstrap", "user", admin.ID, nil)
-	}
+	s.bootstrapAdmin()
 	return s
 }
 
@@ -132,6 +130,70 @@ func env(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+type bootstrapAdminConfig struct {
+	Username     string             `json:"username"`
+	Password     string             `json:"password"`
+	Email        string             `json:"email"`
+	DisplayName  string             `json:"display_name"`
+	PlatformRole model.PlatformRole `json:"platform_role"`
+}
+
+func (s *Store) bootstrapAdmin() {
+	if s.hasAdminLocked() {
+		return
+	}
+	cfg := firstBootstrapConfig()
+	if cfg == nil {
+		return
+	}
+	if cfg.PlatformRole == "" {
+		cfg.PlatformRole = model.PlatformRoleSuperAdmin
+	}
+	if cfg.Username == "" {
+		cfg.Username = usernameFromEmail(cfg.Email)
+	}
+	if cfg.Username == "" || cfg.Password == "" {
+		return
+	}
+	if cfg.DisplayName == "" {
+		cfg.DisplayName = "Bootstrap Admin"
+	}
+	if cfg.Email == "" {
+		cfg.Email = cfg.Username + "@slinger.local"
+	}
+	admin, err := s.UpsertUser(cfg.Username, cfg.Email, cfg.DisplayName, cfg.PlatformRole, cfg.Password, false)
+	if err != nil {
+		panic(err)
+	}
+	s.logLocked(admin.ID, "platform.bootstrap", "user", admin.ID, nil)
+}
+
+func firstBootstrapConfig() *bootstrapAdminConfig {
+	raw := strings.TrimSpace(os.Getenv("SLINGER_ADMIN_BOOTSTRAP"))
+	if raw != "" {
+		var list []bootstrapAdminConfig
+		if err := json.Unmarshal([]byte(raw), &list); err == nil && len(list) > 0 {
+			return &list[0]
+		}
+		var single bootstrapAdminConfig
+		if err := json.Unmarshal([]byte(raw), &single); err == nil {
+			return &single
+		}
+	}
+	legacyUsername := strings.TrimSpace(os.Getenv("SLINGER_ADMIN_USERNAME"))
+	legacyPassword := strings.TrimSpace(os.Getenv("SLINGER_ADMIN_PASSWORD"))
+	if legacyUsername == "" || legacyPassword == "" {
+		return nil
+	}
+	return &bootstrapAdminConfig{
+		Username:     legacyUsername,
+		Password:     legacyPassword,
+		Email:        env("SLINGER_ADMIN_EMAIL", legacyUsername+"@slinger.local"),
+		DisplayName:  env("SLINGER_ADMIN_NAME", "Bootstrap Admin"),
+		PlatformRole: model.PlatformRoleSuperAdmin,
+	}
 }
 
 func (s *Store) Now() time.Time {
@@ -265,56 +327,211 @@ func (s *Store) DevicePoll(deviceCode string) (*model.User, *model.DeviceFlow, e
 		return user, flow, nil
 	}
 	flow.PollCount++
-	user := s.autoApproveUserLocked(flow)
-	flow.Status = "approved"
-	flow.UserID = user.ID
 	s.persistDeviceFlow(context.Background(), flow)
-	return user, flow, nil
+	return nil, flow, nil
 }
 
-func (s *Store) autoApproveUserLocked(flow *model.DeviceFlow) *model.User {
-	email := "user@slinger.local"
-	role := model.PlatformRoleUser
-	if strings.Contains(strings.ToLower(flow.ClientName), "admin") {
-		email = env("SLINGER_ADMIN_EMAIL", "admin@slinger.local")
-		role = model.PlatformRoleSuperAdmin
-	}
-	if existing, ok := s.usersByEmail[strings.ToLower(email)]; ok {
-		return s.users[existing]
-	}
-	return s.createUserLocked(email, flow.DeviceName, role)
-}
-
-func (s *Store) createUserLocked(email, displayName string, role model.PlatformRole) *model.User {
+func (s *Store) createUserLocked(username, email, displayName string, role model.PlatformRole, password string, mustChangePassword bool) (*model.User, error) {
 	now := s.now()
+	email = strings.TrimSpace(email)
+	if username == "" {
+		username = usernameFromEmail(email)
+	}
+	if username == "" {
+		username = randomID("usr")
+	}
+	if _, exists := s.usersByUsername[strings.ToLower(username)]; exists {
+		return nil, errors.New("username already exists")
+	}
+	if _, exists := s.usersByEmail[strings.ToLower(email)]; exists {
+		return nil, errors.New("email already exists")
+	}
+	hash, salt, iterations := "", "", 0
+	if password != "" {
+		var err error
+		hash, salt, iterations, err = hashPassword(password)
+		if err != nil {
+			return nil, err
+		}
+	}
 	user := &model.User{
-		ID:           randomID("usr"),
-		Email:        email,
-		DisplayName:  displayName,
-		PlatformRole: role,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:                 randomID("usr"),
+		Username:           username,
+		Email:              email,
+		DisplayName:        displayName,
+		PlatformRole:       role,
+		MustChangePassword: mustChangePassword,
+		PasswordHash:       hash,
+		PasswordSalt:       salt,
+		PasswordIterations: iterations,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 	s.users[user.ID] = user
+	s.usersByUsername[strings.ToLower(username)] = user.ID
 	s.usersByEmail[strings.ToLower(email)] = user.ID
 	s.persistUser(context.Background(), user)
-	return user
+	return user, nil
 }
 
-func (s *Store) UpsertUser(email, displayName string, role model.PlatformRole) *model.User {
+func (s *Store) UpsertUser(username, email, displayName string, role model.PlatformRole, password string, mustChangePassword bool) (*model.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if id, ok := s.usersByEmail[strings.ToLower(email)]; ok {
-		u := s.users[id]
-		u.DisplayName = displayName
-		if role != "" {
-			u.PlatformRole = role
-		}
-		u.UpdatedAt = s.now()
-		s.persistUser(context.Background(), u)
-		return u
+	email = strings.TrimSpace(email)
+	if username == "" {
+		username = usernameFromEmail(email)
 	}
-	return s.createUserLocked(email, displayName, role)
+	if _, exists := s.usersByUsername[strings.ToLower(username)]; exists {
+		return nil, errors.New("username already exists")
+	}
+	if _, exists := s.usersByEmail[strings.ToLower(email)]; exists {
+		return nil, errors.New("email already exists")
+	}
+	return s.createUserLocked(username, email, displayName, role, password, mustChangePassword)
+}
+
+func (s *Store) AuthenticateUser(username, password string) (*model.User, error) {
+	s.mu.RLock()
+	id, ok := s.usersByUsername[strings.ToLower(strings.TrimSpace(username))]
+	if !ok {
+		s.mu.RUnlock()
+		return nil, errors.New("invalid credentials")
+	}
+	user := s.users[id]
+	s.mu.RUnlock()
+	if user == nil || user.PasswordHash == "" || user.PasswordSalt == "" || user.PasswordIterations <= 0 {
+		return nil, errors.New("invalid credentials")
+	}
+	if !verifyPassword(password, user.PasswordSalt, user.PasswordIterations, user.PasswordHash) {
+		return nil, errors.New("invalid credentials")
+	}
+	cp := *user
+	return &cp, nil
+}
+
+func (s *Store) AuthenticateUserByEmail(email, password string) (*model.User, error) {
+	s.mu.RLock()
+	id, ok := s.usersByEmail[strings.ToLower(strings.TrimSpace(email))]
+	if !ok {
+		s.mu.RUnlock()
+		return nil, errors.New("invalid credentials")
+	}
+	user := s.users[id]
+	s.mu.RUnlock()
+	if user == nil || user.PasswordHash == "" || user.PasswordSalt == "" || user.PasswordIterations <= 0 {
+		return nil, errors.New("invalid credentials")
+	}
+	if !verifyPassword(password, user.PasswordSalt, user.PasswordIterations, user.PasswordHash) {
+		return nil, errors.New("invalid credentials")
+	}
+	cp := *user
+	return &cp, nil
+}
+
+func (s *Store) UpdatePassword(userID, password string, clearMustChange bool) (*model.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	user, ok := s.users[userID]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	hash, salt, iterations, err := hashPassword(password)
+	if err != nil {
+		return nil, err
+	}
+	user.PasswordHash = hash
+	user.PasswordSalt = salt
+	user.PasswordIterations = iterations
+	if clearMustChange {
+		user.MustChangePassword = false
+	}
+	user.UpdatedAt = s.now()
+	s.persistUser(context.Background(), user)
+	cp := *user
+	return &cp, nil
+}
+
+func (s *Store) hasAdminLocked() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, user := range s.users {
+		if user.PlatformRole == model.PlatformRoleSuperAdmin || user.PlatformRole == model.PlatformRolePlatformAdmin {
+			return true
+		}
+	}
+	return false
+}
+
+func usernameFromEmail(email string) string {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return ""
+	}
+	if at := strings.Index(email, "@"); at > 0 {
+		return strings.ToLower(strings.TrimSpace(email[:at]))
+	}
+	return strings.ToLower(email)
+}
+
+const passwordIterationsDefault = 120000
+
+func hashPassword(password string) (string, string, int, error) {
+	if password == "" {
+		return "", "", 0, errors.New("password required")
+	}
+	saltBytes := make([]byte, 16)
+	if _, err := rand.Read(saltBytes); err != nil {
+		return "", "", 0, err
+	}
+	salt := base64.RawStdEncoding.EncodeToString(saltBytes)
+	derived := pbkdf2SHA256([]byte(password), saltBytes, passwordIterationsDefault, 32)
+	return base64.RawStdEncoding.EncodeToString(derived), salt, passwordIterationsDefault, nil
+}
+
+func verifyPassword(password, salt string, iterations int, expected string) bool {
+	if password == "" || salt == "" || iterations <= 0 || expected == "" {
+		return false
+	}
+	saltBytes, err := base64.RawStdEncoding.DecodeString(salt)
+	if err != nil {
+		return false
+	}
+	derived := pbkdf2SHA256([]byte(password), saltBytes, iterations, 32)
+	return hmac.Equal([]byte(base64.RawStdEncoding.EncodeToString(derived)), []byte(expected))
+}
+
+func pbkdf2SHA256(password, salt []byte, iterations, keyLen int) []byte {
+	hashLen := sha256.Size
+	blockCount := (keyLen + hashLen - 1) / hashLen
+	derived := make([]byte, 0, blockCount*hashLen)
+	for block := 1; block <= blockCount; block++ {
+		t := pbkdf2Block(password, salt, iterations, block)
+		derived = append(derived, t...)
+	}
+	return derived[:keyLen]
+}
+
+func pbkdf2Block(password, salt []byte, iterations, blockIndex int) []byte {
+	mac := hmac.New(sha256.New, password)
+	block := make([]byte, len(salt)+4)
+	copy(block, salt)
+	block[len(salt)] = byte(blockIndex >> 24)
+	block[len(salt)+1] = byte(blockIndex >> 16)
+	block[len(salt)+2] = byte(blockIndex >> 8)
+	block[len(salt)+3] = byte(blockIndex)
+	mac.Write(block)
+	u := mac.Sum(nil)
+	out := make([]byte, len(u))
+	copy(out, u)
+	for i := 1; i < iterations; i++ {
+		mac = hmac.New(sha256.New, password)
+		mac.Write(u)
+		u = mac.Sum(nil)
+		for j := range out {
+			out[j] ^= u[j]
+		}
+	}
+	return out
 }
 
 func (s *Store) UserByID(id string) (*model.User, error) {
@@ -339,6 +556,42 @@ func (s *Store) UserByEmail(email string) (*model.User, error) {
 	return &cp, nil
 }
 
+func (s *Store) DeviceFlowByUserCode(userCode string) (*model.DeviceFlow, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	normalized := strings.ToUpper(strings.TrimSpace(userCode))
+	for _, flow := range s.deviceFlows {
+		if flow.UserCode != normalized {
+			continue
+		}
+		cp := *flow
+		return &cp, nil
+	}
+	return nil, errors.New("not found")
+}
+
+func (s *Store) ApproveDeviceFlow(userCode, userID string) (*model.DeviceFlow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	normalized := strings.ToUpper(strings.TrimSpace(userCode))
+	for _, flow := range s.deviceFlows {
+		if flow.UserCode != normalized {
+			continue
+		}
+		if s.now().After(flow.ExpiresAt) {
+			flow.Status = "expired"
+			s.persistDeviceFlow(context.Background(), flow)
+			return nil, errors.New("expired")
+		}
+		flow.Status = "approved"
+		flow.UserID = userID
+		s.persistDeviceFlow(context.Background(), flow)
+		cp := *flow
+		return &cp, nil
+	}
+	return nil, errors.New("not found")
+}
+
 func (s *Store) Users() []*model.User {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -351,7 +604,7 @@ func (s *Store) Users() []*model.User {
 	return out
 }
 
-func (s *Store) CreateWorkspace(owner *model.User, name, slug, description string) *model.Workspace {
+func (s *Store) CreateWorkspace(owner *model.User, name, slug, description string) (*model.Workspace, error) {
 	now := s.now()
 	workspace := &model.Workspace{
 		ID:                     randomID("wsp"),
@@ -368,6 +621,14 @@ func (s *Store) CreateWorkspace(owner *model.User, name, slug, description strin
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, existing := range s.workspaces {
+		if existing.Name == name {
+			return nil, errors.New("workspace name already exists")
+		}
+		if existing.Slug == slug {
+			return nil, errors.New("workspace slug already exists")
+		}
+	}
 	s.workspaces[workspace.ID] = workspace
 	s.ensureWorkspaceMembershipsLocked(workspace.ID)
 	m := s.upsertMembershipLocked(workspace.ID, owner, model.WorkspaceRoleOwner, "active")
@@ -375,7 +636,7 @@ func (s *Store) CreateWorkspace(owner *model.User, name, slug, description strin
 	s.logLocked(owner.ID, "workspace.created", "workspace", workspace.ID, map[string]any{"slug": slug})
 	s.persistWorkspace(context.Background(), workspace)
 	s.persistMembership(context.Background(), m)
-	return workspace
+	return workspace, nil
 }
 
 func (s *Store) WorkspaceByID(id string) (*model.Workspace, error) {
@@ -397,6 +658,24 @@ func (s *Store) WorkspaceBySlug(slug string) (*model.Workspace, error) {
 			cp := *workspace
 			return &cp, nil
 		}
+	}
+	return nil, errors.New("not found")
+}
+
+func (s *Store) WorkspaceByHost(host string) (*model.Workspace, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	host = strings.ToLower(strings.TrimSpace(host))
+	for _, binding := range s.hosts {
+		if strings.ToLower(binding.Host) != host {
+			continue
+		}
+		workspace, ok := s.workspaces[binding.WorkspaceID]
+		if !ok {
+			return nil, errors.New("not found")
+		}
+		cp := *workspace
+		return &cp, nil
 	}
 	return nil, errors.New("not found")
 }
@@ -578,6 +857,43 @@ func (s *Store) Invite(workspaceID string, inviter *model.User, email string, ro
 	return invite
 }
 
+func (s *Store) AddWorkspaceUserByEmail(workspaceID string, actor *model.User, email string, role model.WorkspaceRole) (*model.Membership, *model.Invite, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	email = strings.TrimSpace(strings.ToLower(email))
+	if email == "" {
+		return nil, nil, errors.New("email is required")
+	}
+
+	if userID, ok := s.usersByEmail[email]; ok {
+		user := s.users[userID]
+		membership := s.upsertMembershipLocked(workspaceID, user, role, "active")
+		s.logLocked(actor.ID, "membership.added", "membership", membership.ID, map[string]any{"workspace_id": workspaceID, "email": user.Email})
+		cp := *membership
+		return &cp, nil, nil
+	}
+
+	now := s.now()
+	invite := &model.Invite{
+		ID:              randomID("inv"),
+		WorkspaceID:     workspaceID,
+		Email:           email,
+		Role:            role,
+		Status:          model.InviteStatusPending,
+		InvitedByUserID: actor.ID,
+		ExpiresAt:       now.Add(7 * 24 * time.Hour),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Version:         1,
+	}
+	s.invites[invite.ID] = invite
+	s.logLocked(actor.ID, "invite.created", "invite", invite.ID, map[string]any{"workspace_id": workspaceID, "email": email})
+	s.persistInvite(context.Background(), invite)
+	cp := *invite
+	return nil, &cp, nil
+}
+
 func (s *Store) InviteByID(id string) (*model.Invite, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -587,6 +903,21 @@ func (s *Store) InviteByID(id string) (*model.Invite, error) {
 	}
 	cp := *invite
 	return &cp, nil
+}
+
+func (s *Store) Invites(workspaceID string) []*model.Invite {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []*model.Invite{}
+	for _, invite := range s.invites {
+		if invite.WorkspaceID != workspaceID {
+			continue
+		}
+		cp := *invite
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out
 }
 
 func (s *Store) AcceptInvite(inviteID string) (*model.Membership, *model.Invite, error) {
@@ -610,6 +941,21 @@ func (s *Store) AcceptInvite(inviteID string) (*model.Membership, *model.Invite,
 	cpM := *m
 	cpI := *invite
 	return &cpM, &cpI, nil
+}
+
+func (s *Store) RevokeInvite(inviteID string) (*model.Invite, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	invite, ok := s.invites[inviteID]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	invite.Status = model.InviteStatusRejected
+	invite.Version++
+	invite.UpdatedAt = s.now()
+	s.persistInvite(context.Background(), invite)
+	cp := *invite
+	return &cp, nil
 }
 
 func (s *Store) CreateJoinRequest(workspaceID string, requester *model.User, message string, role model.WorkspaceRole) *model.JoinRequest {
@@ -643,6 +989,21 @@ func (s *Store) JoinRequestByID(id string) (*model.JoinRequest, error) {
 	return &cp, nil
 }
 
+func (s *Store) JoinRequests(workspaceID string) []*model.JoinRequest {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []*model.JoinRequest{}
+	for _, req := range s.joinRequests {
+		if req.WorkspaceID != workspaceID {
+			continue
+		}
+		cp := *req
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out
+}
+
 func (s *Store) ApproveJoinRequest(joinRequestID string, role model.WorkspaceRole) (*model.Membership, *model.JoinRequest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -659,6 +1020,21 @@ func (s *Store) ApproveJoinRequest(joinRequestID string, role model.WorkspaceRol
 	cpM := *m
 	cpR := *req
 	return &cpM, &cpR, nil
+}
+
+func (s *Store) RejectJoinRequest(joinRequestID string) (*model.JoinRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req, ok := s.joinRequests[joinRequestID]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	req.Status = model.JoinRequestStatusRejected
+	req.Version++
+	req.UpdatedAt = s.now()
+	s.persistJoinRequest(context.Background(), req)
+	cp := *req
+	return &cp, nil
 }
 
 func (s *Store) Collections(workspaceID string) []*model.Collection {
@@ -1005,6 +1381,74 @@ func (s *Store) Hosts(workspaceID string) []*model.WorkspaceHost {
 	return out
 }
 
+func (s *Store) WorkspaceSummary(workspaceID string) map[string]int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	summary := map[string]int{
+		"members":       0,
+		"invites":       0,
+		"join_requests": 0,
+		"collections":   0,
+		"folders":       0,
+		"requests":      0,
+		"environments":  0,
+		"variables":     0,
+		"hosts":         0,
+		"audit_logs":    0,
+	}
+	for _, member := range s.memberships {
+		if member.WorkspaceID == workspaceID {
+			summary["members"]++
+		}
+	}
+	for _, invite := range s.invites {
+		if invite.WorkspaceID == workspaceID {
+			summary["invites"]++
+		}
+	}
+	for _, req := range s.joinRequests {
+		if req.WorkspaceID == workspaceID {
+			summary["join_requests"]++
+		}
+	}
+	for _, collection := range s.collections {
+		if collection.WorkspaceID == workspaceID {
+			summary["collections"]++
+		}
+	}
+	for _, folder := range s.folders {
+		if folder.WorkspaceID == workspaceID {
+			summary["folders"]++
+		}
+	}
+	for _, req := range s.requests {
+		if req.WorkspaceID == workspaceID {
+			summary["requests"]++
+		}
+	}
+	for _, environment := range s.environments {
+		if environment.WorkspaceID == workspaceID {
+			summary["environments"]++
+			for _, variable := range s.variables {
+				if variable.EnvironmentID == environment.ID {
+					summary["variables"]++
+				}
+			}
+		}
+	}
+	for _, host := range s.hosts {
+		if host.WorkspaceID == workspaceID {
+			summary["hosts"]++
+		}
+	}
+	for _, log := range s.auditLogs {
+		if log.WorkspaceID == workspaceID {
+			summary["audit_logs"]++
+		}
+	}
+	return summary
+}
+
 func (s *Store) AuditLogsForWorkspace(workspaceID string) []model.AuditLog {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1032,6 +1476,11 @@ func (s *Store) PushOperations(workspaceID string, operations []model.SyncOperat
 	}
 	for _, op := range operations {
 		current++
+		if err := s.applySyncOperationLocked(workspaceID, op); err != nil {
+			rejected = append(rejected, model.SyncRejected{OperationID: op.OperationID, Reason: err.Error()})
+			current--
+			continue
+		}
 		accepted = append(accepted, model.SyncAccepted{OperationID: op.OperationID, ResourceID: op.ResourceID, ResultingVersion: current})
 		op.WorkspaceID = workspaceID
 		op.ResultingVersion = current
@@ -1042,6 +1491,211 @@ func (s *Store) PushOperations(workspaceID string, operations []model.SyncOperat
 	s.checkpoints[workspaceID] = current
 	s.persistSyncCheckpoint(context.Background(), workspaceID, current)
 	return accepted, rejected, current
+}
+
+func (s *Store) applySyncOperationLocked(workspaceID string, op model.SyncOperation) error {
+	switch op.ResourceType {
+	case "workspace":
+		workspace, ok := s.workspaces[workspaceID]
+		if !ok {
+			return errors.New("workspace_not_found")
+		}
+		if name := stringFromPayload(op.Payload, "name"); name != "" {
+			workspace.Name = name
+		}
+		workspace.Version = nextSyncVersion(workspace.Version, op.BaseVersion)
+		workspace.UpdatedAt = s.now()
+		s.persistWorkspace(context.Background(), workspace)
+	case "collection":
+		c, ok := s.collections[op.ResourceID]
+		if ok {
+			c.Name = stringFromPayload(op.Payload, "name")
+			c.Version = nextSyncVersion(c.Version, op.BaseVersion)
+			c.UpdatedAt = s.now()
+			s.persistCollection(context.Background(), c)
+			return nil
+		}
+		now := s.now()
+		c = &model.Collection{
+			ID:          op.ResourceID,
+			WorkspaceID: workspaceID,
+			Name:        stringFromPayload(op.Payload, "name"),
+			CreatedAt:   now,
+			UpdatedAt:   now,
+			Version:     nextSyncVersion(0, op.BaseVersion),
+		}
+		s.collections[c.ID] = c
+		s.persistCollection(context.Background(), c)
+	case "folder":
+		parentFolderID := stringPtrFromPayload(op.Payload, "parent_folder_id")
+		collectionID := stringFromPayload(op.Payload, "collection_id")
+		f, ok := s.folders[op.ResourceID]
+		if ok {
+			f.CollectionID = collectionID
+			f.ParentFolderID = parentFolderID
+			f.Name = stringFromPayload(op.Payload, "name")
+			f.Version = nextSyncVersion(f.Version, op.BaseVersion)
+			f.UpdatedAt = s.now()
+			s.persistFolder(context.Background(), f)
+			return nil
+		}
+		now := s.now()
+		f = &model.Folder{
+			ID:             op.ResourceID,
+			WorkspaceID:    workspaceID,
+			CollectionID:   collectionID,
+			ParentFolderID: parentFolderID,
+			Name:           stringFromPayload(op.Payload, "name"),
+			CreatedAt:      now,
+			UpdatedAt:      now,
+			Version:        nextSyncVersion(0, op.BaseVersion),
+		}
+		s.folders[f.ID] = f
+		s.persistFolder(context.Background(), f)
+	case "request":
+		folderID := stringPtrFromPayload(op.Payload, "folder_id")
+		collectionID := stringFromPayload(op.Payload, "collection_id")
+		req, ok := s.requests[op.ResourceID]
+		if ok {
+			req.CollectionID = collectionID
+			req.FolderID = folderID
+			req.Name = stringFromPayload(op.Payload, "name")
+			req.Method = stringFromPayload(op.Payload, "method")
+			req.URL = stringFromPayload(op.Payload, "url")
+			req.DocumentJSON = stringFromPayload(op.Payload, "document_json")
+			req.Version = nextSyncVersion(req.Version, op.BaseVersion)
+			req.UpdatedAt = s.now()
+			s.persistRequest(context.Background(), req)
+			return nil
+		}
+		now := s.now()
+		req = &model.Request{
+			ID:           op.ResourceID,
+			WorkspaceID:  workspaceID,
+			CollectionID: collectionID,
+			FolderID:     folderID,
+			Name:         stringFromPayload(op.Payload, "name"),
+			Method:       stringFromPayload(op.Payload, "method"),
+			URL:          stringFromPayload(op.Payload, "url"),
+			DocumentJSON: stringFromPayload(op.Payload, "document_json"),
+			CreatedAt:    now,
+			UpdatedAt:    now,
+			Version:      nextSyncVersion(0, op.BaseVersion),
+		}
+		s.requests[req.ID] = req
+		s.persistRequest(context.Background(), req)
+	case "environment":
+		env, ok := s.environments[op.ResourceID]
+		if ok {
+			env.Name = stringFromPayload(op.Payload, "name")
+			env.Version = nextSyncVersion(env.Version, op.BaseVersion)
+			env.UpdatedAt = s.now()
+			s.persistEnvironment(context.Background(), env)
+			return nil
+		}
+		now := s.now()
+		env = &model.Environment{
+			ID:          op.ResourceID,
+			WorkspaceID: workspaceID,
+			Name:        stringFromPayload(op.Payload, "name"),
+			CreatedAt:   now,
+			UpdatedAt:   now,
+			Version:     nextSyncVersion(0, op.BaseVersion),
+		}
+		s.environments[env.ID] = env
+		s.persistEnvironment(context.Background(), env)
+	case "environment_variable":
+		environmentID := stringFromPayload(op.Payload, "environment_id")
+		key := stringFromPayload(op.Payload, "key")
+		value := stringPtrFromPayload(op.Payload, "value")
+		isSecret := boolFromPayload(op.Payload, "is_secret")
+		for _, v := range s.variables {
+			if v.ID == op.ResourceID {
+				v.EnvironmentID = environmentID
+				v.Key = key
+				v.Value = value
+				v.IsSecret = isSecret
+				v.Version = nextSyncVersion(v.Version, op.BaseVersion)
+				v.UpdatedAt = s.now()
+				s.persistVariable(context.Background(), v)
+				return nil
+			}
+		}
+		now := s.now()
+		v := &model.Variable{
+			ID:            op.ResourceID,
+			EnvironmentID: environmentID,
+			Key:           key,
+			Value:         value,
+			IsSecret:      isSecret,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+			Version:       nextSyncVersion(0, op.BaseVersion),
+		}
+		s.variables[v.ID] = v
+		s.persistVariable(context.Background(), v)
+	default:
+		return errors.New("unsupported_resource_type")
+	}
+	return nil
+}
+
+func nextSyncVersion(currentVersion, baseVersion int) int {
+	if currentVersion <= 0 {
+		if baseVersion > 0 {
+			return baseVersion + 1
+		}
+		return 1
+	}
+	if baseVersion >= currentVersion {
+		return baseVersion + 1
+	}
+	return currentVersion + 1
+}
+
+func stringFromPayload(payload map[string]any, key string) string {
+	if payload == nil {
+		return ""
+	}
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	default:
+		return fmt.Sprint(typed)
+	}
+}
+
+func stringPtrFromPayload(payload map[string]any, key string) *string {
+	if payload == nil {
+		return nil
+	}
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return nil
+	}
+	switch typed := value.(type) {
+	case string:
+		return &typed
+	default:
+		str := fmt.Sprint(typed)
+		return &str
+	}
+}
+
+func boolFromPayload(payload map[string]any, key string) bool {
+	if payload == nil {
+		return false
+	}
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return false
+	}
+	typed, ok := value.(bool)
+	return ok && typed
 }
 
 func (s *Store) PullOperations(workspaceID string, afterCheckpoint int) ([]model.SyncOperation, int) {

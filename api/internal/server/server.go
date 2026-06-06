@@ -35,39 +35,58 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 		return
 	}
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/device":
+		s.devicePage(w, r)
+		return
+	case r.Method == http.MethodPost && r.URL.Path == "/device/identify":
+		s.deviceIdentify(w, r)
+		return
+	case r.Method == http.MethodPost && r.URL.Path == "/device/login":
+		s.deviceLogin(w, r)
+		return
+	case r.Method == http.MethodGet && r.URL.Path == "/device/password":
+		s.devicePasswordPage(w, r)
+		return
+	case r.Method == http.MethodPost && r.URL.Path == "/device/password":
+		s.devicePasswordSubmit(w, r)
+		return
+	}
 	if !strings.HasPrefix(r.URL.Path, "/v1/") {
 		http.NotFound(w, r)
 		return
 	}
 
 	user, err := s.currentUser(r)
-	protected := !strings.HasPrefix(r.URL.Path, "/v1/auth/")
+	protected := !s.isPublicPath(r.URL.Path)
 	if protected && err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthenticated", "missing or invalid access token", nil)
 		return
 	}
 
 	switch {
-	case r.Method == http.MethodPost && r.URL.Path == "/v1/auth/device/start":
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/account/device/start":
 		s.deviceStart(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/v1/auth/device/poll":
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/account/device/poll":
 		s.devicePoll(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/v1/auth/refresh":
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/account/refresh":
 		s.refresh(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/v1/auth/logout":
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/account/logout":
 		s.logout(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/v1/auth/browser/start":
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/account/browser/start":
 		s.browserStart(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/v1/auth/browser/login":
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/account/browser/login":
 		s.browserLogin(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/v1/auth/browser/logout":
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/account/browser/logout":
 		s.browserLogout(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/v1/me":
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/account/me":
 		s.me(w, user)
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/workspaces":
 		s.listWorkspaces(w, user)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/workspaces":
 		s.createWorkspace(w, r, user)
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/workspaces/resolve":
+		s.resolveWorkspace(w, r, user)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/workspaces/publish":
 		s.publishWorkspace(w, r, user)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/sync/clients/register":
@@ -80,6 +99,21 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminRoutes(w, r, user)
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) isPublicPath(path string) bool {
+	switch path {
+	case "/v1/account/device/start",
+		"/v1/account/device/poll",
+		"/v1/account/refresh",
+		"/v1/account/logout",
+		"/v1/account/browser/start",
+		"/v1/account/browser/login",
+		"/v1/account/browser/logout":
+		return true
+	default:
+		return false
 	}
 }
 

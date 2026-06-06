@@ -1,8 +1,12 @@
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
   email TEXT NOT NULL UNIQUE,
   display_name TEXT NOT NULL,
   platform_role TEXT NOT NULL,
+  password_hash TEXT NOT NULL DEFAULT '',
+  password_salt TEXT NOT NULL DEFAULT '',
+  password_iterations BIGINT NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
@@ -145,6 +149,12 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
   created_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS device_flows (
   device_code TEXT PRIMARY KEY,
   user_code TEXT NOT NULL UNIQUE,
@@ -177,3 +187,10 @@ CREATE TABLE IF NOT EXISTS sync_operations (
 CREATE INDEX IF NOT EXISTS idx_memberships_workspace ON memberships(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_audit_workspace ON audit_logs(workspace_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sync_workspace ON sync_operations(workspace_id, resulting_version);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_salt TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_iterations BIGINT NOT NULL DEFAULT 0;
+UPDATE users SET username = COALESCE(username, split_part(email, '@', 1) || '_' || substr(id, 1, 8)) WHERE username IS NULL OR username = '';
+ALTER TABLE users ALTER COLUMN username SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username);

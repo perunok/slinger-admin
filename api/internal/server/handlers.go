@@ -44,6 +44,10 @@ func (s *Server) devicePoll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthenticated", err.Error(), nil)
 		return
 	}
+	if user == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "pending"})
+		return
+	}
 	access, err := s.store.CreateAccessToken(user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error(), nil)
@@ -125,6 +129,10 @@ func (s *Server) listWorkspaces(w http.ResponseWriter, user *model.User) {
 }
 
 func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request, user *model.User) {
+	if err := s.requirePlatformAdmin(user); err != nil {
+		writeError(w, http.StatusForbidden, "forbidden", "admin access required", nil)
+		return
+	}
 	var req struct {
 		Name        string `json:"name"`
 		Slug        string `json:"slug"`
@@ -137,12 +145,47 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request, user *m
 	if req.Slug == "" {
 		req.Slug = slugify(req.Name)
 	}
-	workspace := s.store.CreateWorkspace(user, req.Name, req.Slug, req.Description)
+	workspace, err := s.store.CreateWorkspace(user, req.Name, req.Slug, req.Description)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
+		return
+	}
 	membership, _ := s.store.Membership(workspace.ID, user.ID)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"workspace":  workspace,
 		"membership": map[string]any{"role": membership.Role},
 	})
+}
+
+func (s *Server) resolveWorkspace(w http.ResponseWriter, r *http.Request, user *model.User) {
+	workspaceID := strings.TrimSpace(r.URL.Query().Get("workspace_id"))
+	slug := strings.TrimSpace(r.URL.Query().Get("slug"))
+	host := strings.TrimSpace(r.URL.Query().Get("host"))
+
+	var (
+		workspace *model.Workspace
+		err       error
+	)
+	switch {
+	case workspaceID != "":
+		workspace, err = s.store.WorkspaceByID(workspaceID)
+	case slug != "":
+		workspace, err = s.store.WorkspaceBySlug(slug)
+	case host != "":
+		workspace, err = s.store.WorkspaceByHost(host)
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_request", "workspace_id, slug, or host is required", nil)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error(), nil)
+		return
+	}
+	if _, _, err := s.requireWorkspaceAccess(user, workspace.ID); err != nil {
+		writeError(w, http.StatusForbidden, "workspace_access_denied", err.Error(), map[string]any{"workspace_id": workspace.ID})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workspace": workspace})
 }
 
 func (s *Server) publishWorkspace(w http.ResponseWriter, r *http.Request, user *model.User) {
@@ -151,8 +194,9 @@ func (s *Server) publishWorkspace(w http.ResponseWriter, r *http.Request, user *
 			Name         string `json:"name"`
 			ProposedSlug string `json:"proposed_slug"`
 		} `json:"local_workspace"`
-		PublishMode string `json:"publish_mode"`
-		Client      struct {
+		RemoteWorkspaceID string `json:"remote_workspace_id"`
+		PublishMode       string `json:"publish_mode"`
+		Client            struct {
 			ClientID   string `json:"client_id"`
 			DeviceName string `json:"device_name"`
 		} `json:"client"`
@@ -164,22 +208,32 @@ func (s *Server) publishWorkspace(w http.ResponseWriter, r *http.Request, user *
 	var workspace *model.Workspace
 	var membership *model.Membership
 	if req.PublishMode == "attach_existing" {
-		if existing, err := s.store.WorkspaceBySlug(req.LocalWorkspace.ProposedSlug); err == nil {
-			membership, _ = s.store.Membership(existing.ID, user.ID)
-			if membership == nil {
+		if req.RemoteWorkspaceID != "" {
+			if existing, err := s.store.WorkspaceByID(req.RemoteWorkspaceID); err == nil {
+				workspace = existing
+			}
+		}
+		if workspace == nil {
+			if existing, err := s.store.WorkspaceBySlug(req.LocalWorkspace.ProposedSlug); err == nil {
+				workspace = existing
+			}
+		}
+		if workspace != nil {
+			_, resolvedMembership, err := s.requireWorkspaceAccess(user, workspace.ID)
+			if err != nil {
 				writeError(w, http.StatusForbidden, "workspace_access_denied", "caller must already have access", nil)
 				return
 			}
-			workspace = existing
+			if !hasAnyWorkspaceRole(resolvedMembership, model.WorkspaceRoleOwner, model.WorkspaceRoleAdmin, model.WorkspaceRoleEditor) {
+				writeError(w, http.StatusForbidden, "forbidden", "editor access or higher is required", nil)
+				return
+			}
+			membership = resolvedMembership
 		}
 	}
 	if workspace == nil {
-		slug := req.LocalWorkspace.ProposedSlug
-		if slug == "" {
-			slug = slugify(req.LocalWorkspace.Name)
-		}
-		workspace = s.store.CreateWorkspace(user, req.LocalWorkspace.Name, slug, "")
-		membership, _ = s.store.Membership(workspace.ID, user.ID)
+		writeError(w, http.StatusBadRequest, "workspace_required", "select an existing workspace created by an admin", nil)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"workspace":      workspace,
@@ -230,7 +284,18 @@ func (s *Server) handleAdminRoutes(w http.ResponseWriter, r *http.Request, user 
 		writeError(w, http.StatusForbidden, "forbidden", "admin access required", nil)
 		return
 	}
+	parts := splitPath(r.URL.Path)
 	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/admin/stats":
+		users := s.store.Users()
+		workspaces := s.store.Workspaces()
+		auditLogs := s.store.AuditLogs()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"users":           len(users),
+			"workspaces":      len(workspaces),
+			"audit_logs":      len(auditLogs),
+			"platform_admins": countPlatformAdmins(users),
+		})
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/admin/users":
 		users := s.store.Users()
 		items := make([]*model.User, 0, len(users))
@@ -240,19 +305,47 @@ func (s *Server) handleAdminRoutes(w http.ResponseWriter, r *http.Request, user 
 		writeJSON(w, http.StatusOK, paged(items, nil))
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/admin/users":
 		var req struct {
+			Username     string             `json:"username"`
 			Email        string             `json:"email"`
 			DisplayName  string             `json:"display_name"`
+			Password     string             `json:"password"`
 			PlatformRole model.PlatformRole `json:"platform_role"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
 			return
 		}
-		u := s.store.UpsertUser(req.Email, req.DisplayName, req.PlatformRole)
+		if req.Username == "" || req.Email == "" || req.Password == "" {
+			writeError(w, http.StatusBadRequest, "invalid_request", "username, email, and password are required", nil)
+			return
+		}
+		u, err := s.store.UpsertUser(req.Username, req.Email, req.DisplayName, req.PlatformRole, req.Password, true)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
+			return
+		}
 		writeJSON(w, http.StatusCreated, map[string]any{"user": u})
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/admin/workspaces":
-		items := s.store.Workspaces()
+		views := s.store.WorkspacesForUser(user)
+		items := make([]map[string]any, 0, len(views))
+		for _, view := range views {
+			items = append(items, map[string]any{
+				"id": view.ID, "slug": view.Slug, "name": view.Name, "role": view.Role,
+				"host_mode": view.HostMode, "created_at": view.CreatedAt, "updated_at": view.UpdatedAt, "version": view.Version,
+			})
+		}
 		writeJSON(w, http.StatusOK, paged(items, nil))
+	case len(parts) == 4 && r.Method == http.MethodGet && parts[0] == "v1" && parts[1] == "admin" && parts[2] == "workspaces":
+		workspaceID := parts[3]
+		workspace, _, err := s.requireWorkspaceAccess(user, workspaceID)
+		if err != nil {
+			writeError(w, http.StatusForbidden, "workspace_access_denied", err.Error(), nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"workspace": workspace,
+			"summary":   s.store.WorkspaceSummary(workspaceID),
+		})
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/admin/audit-logs":
 		writeJSON(w, http.StatusOK, paged(s.store.AuditLogs(), nil))
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/admin/health":
@@ -266,6 +359,16 @@ func (s *Server) handleAdminRoutes(w http.ResponseWriter, r *http.Request, user 
 	}
 }
 
+func countPlatformAdmins(users []*model.User) int {
+	total := 0
+	for _, user := range users {
+		if user.PlatformRole == model.PlatformRoleSuperAdmin || user.PlatformRole == model.PlatformRolePlatformAdmin {
+			total++
+		}
+	}
+	return total
+}
+
 func (s *Server) handleWorkspaceRoutes(w http.ResponseWriter, r *http.Request, user *model.User) {
 	parts := splitPath(r.URL.Path)
 	if len(parts) < 3 {
@@ -273,6 +376,15 @@ func (s *Server) handleWorkspaceRoutes(w http.ResponseWriter, r *http.Request, u
 		return
 	}
 	workspaceID := parts[2]
+	if len(parts) == 5 && parts[3] == "settings" && parts[4] == "join-requests" && r.Method == http.MethodPost {
+		workspace, err := s.store.WorkspaceByID(workspaceID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "not_found", err.Error(), nil)
+			return
+		}
+		s.handleJoinRequestRoutes(w, r, user, workspace, nil, []string{parts[0], parts[1], parts[2], parts[4]})
+		return
+	}
 	workspace, membership, err := s.requireWorkspaceAccess(user, workspaceID)
 	if err != nil {
 		writeError(w, http.StatusForbidden, "workspace_access_denied", err.Error(), map[string]any{"workspace_id": workspaceID})
@@ -292,16 +404,12 @@ func (s *Server) handleWorkspaceRoutes(w http.ResponseWriter, r *http.Request, u
 	}
 
 	switch parts[3] {
-	case "members":
-		s.handleMembersRoutes(w, r, user, workspace, membership, parts)
-	case "invites":
-		if r.Method == http.MethodPost && len(parts) == 4 {
-			s.createInvite(w, r, user, workspace)
+	case "audit-logs":
+		if r.Method == http.MethodGet && len(parts) == 4 {
+			writeJSON(w, http.StatusOK, paged(s.store.AuditLogsForWorkspace(workspace.ID), nil))
 			return
 		}
 		http.NotFound(w, r)
-	case "join-requests":
-		s.handleJoinRequestRoutes(w, r, user, workspace, membership, parts)
 	case "collections":
 		s.handleCollectionRoutes(w, r, user, workspace, membership, parts)
 	case "folders":
@@ -316,15 +424,47 @@ func (s *Server) handleWorkspaceRoutes(w http.ResponseWriter, r *http.Request, u
 		s.handleRealtimeRoutes(w, r, user, workspace, parts)
 	case "collab":
 		s.handleCollabRoutes(w, r, user, workspace, parts)
+	case "settings":
+		s.handleWorkspaceSettingsRoutes(w, r, user, workspace, membership, parts)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) handleWorkspaceSettingsRoutes(w http.ResponseWriter, r *http.Request, user *model.User, workspace *model.Workspace, membership *model.Membership, parts []string) {
+	if len(parts) < 5 {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch parts[4] {
+	case "members":
+		settingsParts := append([]string{parts[0], parts[1], parts[2], parts[4]}, parts[5:]...)
+		s.handleMembersRoutes(w, r, user, workspace, membership, settingsParts)
+	case "invites":
+		switch {
+		case r.Method == http.MethodGet && len(parts) == 5:
+			s.listInvites(w, user, workspace, membership)
+		case r.Method == http.MethodPost && len(parts) == 5:
+			s.createInvite(w, r, user, workspace)
+		case r.Method == http.MethodPost && len(parts) == 7 && parts[6] == "revoke":
+			s.revokeInvite(w, user, workspace, membership, parts[5])
+		default:
+			http.NotFound(w, r)
+		}
+	case "join-requests":
+		settingsParts := append([]string{parts[0], parts[1], parts[2], parts[4]}, parts[5:]...)
+		s.handleJoinRequestRoutes(w, r, user, workspace, membership, settingsParts)
 	case "hosts":
-		s.handleHostRoutes(w, r, user, workspace, membership, parts)
+		settingsParts := append([]string{parts[0], parts[1], parts[2], parts[4]}, parts[5:]...)
+		s.handleHostRoutes(w, r, user, workspace, membership, settingsParts)
 	default:
 		http.NotFound(w, r)
 	}
 }
 
 func (s *Server) canManageMembers(user *model.User, membership *model.Membership) bool {
-	return user.PlatformRole == model.PlatformRoleSuperAdmin || user.PlatformRole == model.PlatformRolePlatformAdmin || membership.Role == model.WorkspaceRoleOwner || membership.Role == model.WorkspaceRoleAdmin
+	return user.PlatformRole == model.PlatformRoleSuperAdmin || user.PlatformRole == model.PlatformRolePlatformAdmin
 }
 
 func (s *Server) canEditContent(user *model.User, membership *model.Membership) bool {
@@ -367,8 +507,47 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request, user *mode
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
 		return
 	}
-	invite := s.store.Invite(workspace.ID, user, req.Email, req.Role)
-	writeJSON(w, http.StatusCreated, map[string]any{"invite": invite})
+	member, invite, err := s.store.AddWorkspaceUserByEmail(workspace.ID, user, req.Email, req.Role)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
+		return
+	}
+	response := map[string]any{}
+	if member != nil {
+		response["membership"] = member
+		response["action"] = "added"
+		writeJSON(w, http.StatusCreated, response)
+		return
+	}
+	response["invite"] = invite
+	response["action"] = "invited"
+	writeJSON(w, http.StatusCreated, response)
+}
+
+func (s *Server) listInvites(w http.ResponseWriter, user *model.User, workspace *model.Workspace, membership *model.Membership) {
+	if !s.canManageMembers(user, membership) {
+		writeError(w, http.StatusForbidden, "forbidden", "insufficient workspace role", nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, paged(s.store.Invites(workspace.ID), nil))
+}
+
+func (s *Server) revokeInvite(w http.ResponseWriter, user *model.User, workspace *model.Workspace, membership *model.Membership, inviteID string) {
+	if !s.canManageMembers(user, membership) {
+		writeError(w, http.StatusForbidden, "forbidden", "insufficient workspace role", nil)
+		return
+	}
+	invite, err := s.store.InviteByID(inviteID)
+	if err != nil || invite.WorkspaceID != workspace.ID {
+		writeError(w, http.StatusNotFound, "not_found", "invite not found", nil)
+		return
+	}
+	updated, err := s.store.RevokeInvite(inviteID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error(), nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"invite": updated})
 }
 
 func (s *Server) handleMembersRoutes(w http.ResponseWriter, r *http.Request, user *model.User, workspace *model.Workspace, membership *model.Membership, parts []string) {
@@ -407,6 +586,14 @@ func (s *Server) handleMembersRoutes(w http.ResponseWriter, r *http.Request, use
 }
 
 func (s *Server) handleJoinRequestRoutes(w http.ResponseWriter, r *http.Request, user *model.User, workspace *model.Workspace, membership *model.Membership, parts []string) {
+	if len(parts) == 4 && r.Method == http.MethodGet {
+		if !s.canManageMembers(user, membership) {
+			writeError(w, http.StatusForbidden, "forbidden", "insufficient workspace role", nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, paged(s.store.JoinRequests(workspace.ID), nil))
+		return
+	}
 	if len(parts) == 4 && r.Method == http.MethodPost {
 		var req struct {
 			Message       string              `json:"message"`
@@ -440,6 +627,25 @@ func (s *Server) handleJoinRequestRoutes(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"membership": m})
+		return
+	}
+	if len(parts) == 6 && parts[5] == "reject" && r.Method == http.MethodPost {
+		if !s.canManageMembers(user, membership) {
+			writeError(w, http.StatusForbidden, "forbidden", "insufficient workspace role", nil)
+			return
+		}
+		joinRequestID := parts[4]
+		req, err := s.store.JoinRequestByID(joinRequestID)
+		if err != nil || req.WorkspaceID != workspace.ID {
+			writeError(w, http.StatusNotFound, "not_found", "join request not found", nil)
+			return
+		}
+		rejected, err := s.store.RejectJoinRequest(joinRequestID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "not_found", err.Error(), nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"join_request": rejected})
 		return
 	}
 	http.NotFound(w, r)

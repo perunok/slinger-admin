@@ -21,9 +21,6 @@ func (s *Server) requireWorkspaceAccess(user *model.User, workspaceID string) (*
 	if err != nil {
 		return nil, nil, err
 	}
-	if user.PlatformRole == model.PlatformRoleSuperAdmin || user.PlatformRole == model.PlatformRolePlatformAdmin {
-		return workspace, &model.Membership{Role: model.WorkspaceRoleOwner}, nil
-	}
 	membership, ok := s.store.Membership(workspaceID, user.ID)
 	if !ok || membership.Status != "active" {
 		return nil, nil, errors.New("user has no access to workspace")

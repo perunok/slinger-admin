@@ -72,12 +72,17 @@ const (
 )
 
 type User struct {
-	ID           string       `json:"id"`
-	Email        string       `json:"email"`
-	DisplayName  string       `json:"display_name"`
-	PlatformRole PlatformRole `json:"platform_role"`
-	CreatedAt    time.Time    `json:"created_at"`
-	UpdatedAt    time.Time    `json:"updated_at"`
+	ID                 string       `json:"id"`
+	Username           string       `json:"username"`
+	Email              string       `json:"email"`
+	DisplayName        string       `json:"display_name"`
+	PlatformRole       PlatformRole `json:"platform_role"`
+	MustChangePassword bool         `json:"must_change_password"`
+	PasswordHash       string       `json:"-"`
+	PasswordSalt       string       `json:"-"`
+	PasswordIterations int          `json:"-"`
+	CreatedAt          time.Time    `json:"created_at"`
+	UpdatedAt          time.Time    `json:"updated_at"`
 }
 
 type Workspace struct {

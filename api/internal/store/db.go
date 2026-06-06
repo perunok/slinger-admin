@@ -14,9 +14,14 @@ import (
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
   email TEXT NOT NULL UNIQUE,
   display_name TEXT NOT NULL,
   platform_role TEXT NOT NULL,
+  must_change_password BOOLEAN NOT NULL DEFAULT FALSE,
+  password_hash TEXT NOT NULL DEFAULT '',
+  password_salt TEXT NOT NULL DEFAULT '',
+  password_iterations BIGINT NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
@@ -197,6 +202,14 @@ CREATE TABLE IF NOT EXISTS sync_operations (
 CREATE INDEX IF NOT EXISTS idx_memberships_workspace ON memberships(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_audit_workspace ON audit_logs(workspace_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sync_workspace ON sync_operations(workspace_id, resulting_version);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_salt TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_iterations BIGINT NOT NULL DEFAULT 0;
+UPDATE users SET username = COALESCE(username, split_part(email, '@', 1) || '_' || substr(id, 1, 8)) WHERE username IS NULL OR username = '';
+ALTER TABLE users ALTER COLUMN username SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username);
 `
 
 func (s *Store) ensureSchema(ctx context.Context) error {
@@ -263,30 +276,48 @@ func (s *Store) loadFromDB(ctx context.Context) error {
 }
 
 func (s *Store) loadUsers(ctx context.Context) error {
-	rows, err := s.db.Query(ctx, `SELECT id, email, display_name, platform_role, created_at, updated_at FROM users`)
+	rows, err := s.db.Query(ctx, `SELECT id, username, email, display_name, platform_role, must_change_password, password_hash, password_salt, password_iterations, created_at, updated_at FROM users`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var u modelUserRow
-		if err := rows.Scan(&u.ID, &u.Email, &u.DisplayName, &u.PlatformRole, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PlatformRole, &u.MustChangePassword, &u.PasswordHash, &u.PasswordSalt, &u.PasswordIterations, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return err
 		}
-		user := &model.User{ID: u.ID, Email: u.Email, DisplayName: u.DisplayName, PlatformRole: model.PlatformRole(u.PlatformRole), CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt}
+		user := &model.User{
+			ID:                 u.ID,
+			Username:           u.Username,
+			Email:              u.Email,
+			DisplayName:        u.DisplayName,
+			PlatformRole:       model.PlatformRole(u.PlatformRole),
+			MustChangePassword: u.MustChangePassword,
+			PasswordHash:       u.PasswordHash,
+			PasswordSalt:       u.PasswordSalt,
+			PasswordIterations: int(u.PasswordIterations),
+			CreatedAt:          u.CreatedAt,
+			UpdatedAt:          u.UpdatedAt,
+		}
 		s.users[user.ID] = user
+		s.usersByUsername[strings.ToLower(user.Username)] = user.ID
 		s.usersByEmail[strings.ToLower(user.Email)] = user.ID
 	}
 	return rows.Err()
 }
 
 type modelUserRow struct {
-	ID           string
-	Email        string
-	DisplayName  string
-	PlatformRole string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID                 string
+	Username           string
+	Email              string
+	DisplayName        string
+	PlatformRole       string
+	MustChangePassword bool
+	PasswordHash       string
+	PasswordSalt       string
+	PasswordIterations int64
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 func (s *Store) loadWorkspaces(ctx context.Context) error {
@@ -540,10 +571,10 @@ func (s *Store) persistUser(ctx context.Context, user *model.User) {
 	if s.db == nil || user == nil {
 		return
 	}
-	_, _ = s.db.Exec(ctx, `INSERT INTO users (id, email, display_name, platform_role, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6)
-ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, display_name = EXCLUDED.display_name, platform_role = EXCLUDED.platform_role, updated_at = EXCLUDED.updated_at`,
-		user.ID, user.Email, user.DisplayName, user.PlatformRole, user.CreatedAt, user.UpdatedAt)
+	_, _ = s.db.Exec(ctx, `INSERT INTO users (id, username, email, display_name, platform_role, must_change_password, password_hash, password_salt, password_iterations, created_at, updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+ON CONFLICT (id) DO UPDATE SET username = EXCLUDED.username, email = EXCLUDED.email, display_name = EXCLUDED.display_name, platform_role = EXCLUDED.platform_role, must_change_password = EXCLUDED.must_change_password, password_hash = EXCLUDED.password_hash, password_salt = EXCLUDED.password_salt, password_iterations = EXCLUDED.password_iterations, updated_at = EXCLUDED.updated_at`,
+		user.ID, user.Username, user.Email, user.DisplayName, user.PlatformRole, user.MustChangePassword, user.PasswordHash, user.PasswordSalt, user.PasswordIterations, user.CreatedAt, user.UpdatedAt)
 }
 
 func (s *Store) persistWorkspace(ctx context.Context, workspace *model.Workspace) {

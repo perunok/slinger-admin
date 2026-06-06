@@ -5,39 +5,39 @@ info:
 servers:
   - url: /v1
 paths:
-  /auth/device/start:
+  /account/device/start:
     post:
       requestBody:
         required: true
       responses:
         "200":
           description: Device flow started
-  /auth/browser/start:
+  /account/browser/start:
     get:
       responses:
         "200":
           description: Browser session start metadata
-  /auth/browser/login:
+  /account/browser/login:
     post:
       responses:
         "200":
           description: Browser session created
-  /auth/browser/logout:
+  /account/browser/logout:
     post:
       responses:
         "200":
           description: Browser session cleared
-  /auth/device/poll:
+  /account/device/poll:
     post:
       responses:
         "200":
           description: Device poll response
-  /auth/refresh:
+  /account/refresh:
     post:
       responses:
         "200":
           description: Refreshed tokens
-  /me:
+  /account/me:
     get:
       responses:
         "200":
@@ -66,12 +66,12 @@ paths:
       responses:
         "200":
           description: Workspace updated
-  /workspaces/{workspace_id}/members:
+  /workspaces/{workspace_id}/settings/members:
     get:
       responses:
         "200":
           description: Members list
-  /workspaces/{workspace_id}/invites:
+  /workspaces/{workspace_id}/settings/invites:
     post:
       responses:
         "201":
@@ -81,7 +81,7 @@ paths:
       responses:
         "200":
           description: Invite accepted
-  /workspaces/{workspace_id}/join-requests:
+  /workspaces/{workspace_id}/settings/join-requests:
     post:
       responses:
         "201":

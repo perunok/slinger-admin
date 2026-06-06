@@ -336,6 +336,29 @@
     }
   }
 
+  async function deleteWorkspace() {
+    if (!workspaceDetail) return;
+    const confirmed = window.confirm(`Delete workspace "${workspaceDetail.name}"? This removes its members, content, hosts, and sync history.`);
+    if (!confirmed) return;
+
+    try {
+      await requestJson<{ ok: boolean }>(`/v1/workspaces/${workspaceDetail.id}`, {
+        method: 'DELETE',
+      });
+      workspaceDetail = null;
+      members = [];
+      hosts = [];
+      invites = [];
+      joinRequests = [];
+      workspaceSummary = {};
+      await loadDashboard();
+      navigate({ name: 'workspaces' });
+      setMessage('status', 'Workspace deleted.');
+    } catch (err) {
+      setMessage('error', err instanceof Error ? err.message : 'Failed to delete workspace');
+    }
+  }
+
   function selectWorkspace(workspaceId: string) {
     navigate({ name: 'workspace-detail', workspaceId });
     void loadWorkspaceDetail(workspaceId);
@@ -422,6 +445,7 @@
             {formatDate}
             {navigate}
             reload={() => route.name === 'workspace-detail' ? loadWorkspaceDetail(route.workspaceId) : Promise.resolve()}
+            {deleteWorkspace}
             createInvite={createInvite}
             createHost={createHost}
             {revokeInvite}

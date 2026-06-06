@@ -90,6 +90,7 @@ type Workspace struct {
 	Slug                   string        `json:"slug"`
 	Name                   string        `json:"name"`
 	Description            string        `json:"description,omitempty"`
+	SyncSHA                string        `json:"sync_sha,omitempty"`
 	OwnerUserID            string        `json:"owner_user_id"`
 	Visibility             Visibility    `json:"visibility"`
 	DefaultRoleForRequests WorkspaceRole `json:"default_role_for_requests,omitempty"`
@@ -207,6 +208,7 @@ type SyncAccepted struct {
 type SyncRejected struct {
 	OperationID string `json:"operation_id"`
 	Reason      string `json:"reason"`
+	Message     string `json:"message,omitempty"`
 }
 
 type SyncOperation struct {

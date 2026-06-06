@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
   slug TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
+  sync_sha TEXT NOT NULL DEFAULT '',
   owner_user_id TEXT NOT NULL REFERENCES users(id),
   visibility TEXT NOT NULL DEFAULT 'private',
   default_role_for_requests TEXT NOT NULL DEFAULT 'viewer',
@@ -187,6 +188,7 @@ CREATE TABLE IF NOT EXISTS sync_operations (
 CREATE INDEX IF NOT EXISTS idx_memberships_workspace ON memberships(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_audit_workspace ON audit_logs(workspace_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sync_workspace ON sync_operations(workspace_id, resulting_version);
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS sync_sha TEXT NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_salt TEXT NOT NULL DEFAULT '';

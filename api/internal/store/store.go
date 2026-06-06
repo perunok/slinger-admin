@@ -715,6 +715,69 @@ func (s *Store) UpdateWorkspace(id string, version int, name, description *strin
 	return &cp, nil
 }
 
+func (s *Store) DeleteWorkspace(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.workspaces[id]; !ok {
+		return errors.New("not found")
+	}
+
+	delete(s.workspaces, id)
+	delete(s.membershipsByWorkspace, id)
+	delete(s.operations, id)
+	delete(s.checkpoints, id)
+
+	for memberID, membership := range s.memberships {
+		if membership.WorkspaceID == id {
+			delete(s.memberships, memberID)
+		}
+	}
+	for inviteID, invite := range s.invites {
+		if invite.WorkspaceID == id {
+			delete(s.invites, inviteID)
+		}
+	}
+	for requestID, joinRequest := range s.joinRequests {
+		if joinRequest.WorkspaceID == id {
+			delete(s.joinRequests, requestID)
+		}
+	}
+	for hostID, host := range s.hosts {
+		if host.WorkspaceID == id {
+			delete(s.hosts, hostID)
+		}
+	}
+	for collectionID, collection := range s.collections {
+		if collection.WorkspaceID == id {
+			delete(s.collections, collectionID)
+		}
+	}
+	for folderID, folder := range s.folders {
+		if folder.WorkspaceID == id {
+			delete(s.folders, folderID)
+		}
+	}
+	for requestID, request := range s.requests {
+		if request.WorkspaceID == id {
+			delete(s.requests, requestID)
+		}
+	}
+	for environmentID, environment := range s.environments {
+		if environment.WorkspaceID == id {
+			delete(s.environments, environmentID)
+		}
+	}
+	for variableID, variable := range s.variables {
+		if _, ok := s.environments[variable.EnvironmentID]; !ok {
+			delete(s.variables, variableID)
+		}
+	}
+
+	s.deleteWorkspaceRecords(context.Background(), id)
+	return nil
+}
+
 func (s *Store) WorkspacesForUser(user *model.User) []WorkspaceView {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1468,6 +1531,9 @@ func (s *Store) PushOperations(workspaceID string, operations []model.SyncOperat
 	current := s.checkpoints[workspaceID]
 	accepted := []model.SyncAccepted{}
 	rejected := []model.SyncRejected{}
+	if noChangesReason := s.noChangesSyncRejectionsLocked(workspaceID, operations); len(noChangesReason) > 0 {
+		return accepted, noChangesReason, current
+	}
 	if baseCheckpoint != current {
 		for _, op := range operations {
 			rejected = append(rejected, model.SyncRejected{OperationID: op.OperationID, Reason: "sync_conflict"})
@@ -1477,7 +1543,7 @@ func (s *Store) PushOperations(workspaceID string, operations []model.SyncOperat
 	for _, op := range operations {
 		current++
 		if err := s.applySyncOperationLocked(workspaceID, op); err != nil {
-			rejected = append(rejected, model.SyncRejected{OperationID: op.OperationID, Reason: err.Error()})
+			rejected = append(rejected, model.SyncRejected{OperationID: op.OperationID, Reason: err.Error(), Message: err.Error()})
 			current--
 			continue
 		}
@@ -1493,6 +1559,35 @@ func (s *Store) PushOperations(workspaceID string, operations []model.SyncOperat
 	return accepted, rejected, current
 }
 
+func (s *Store) noChangesSyncRejectionsLocked(workspaceID string, operations []model.SyncOperation) []model.SyncRejected {
+	workspace, ok := s.workspaces[workspaceID]
+	if !ok || workspace.SyncSHA == "" {
+		return nil
+	}
+
+	for _, op := range operations {
+		if op.ResourceType != "workspace" || op.Op != "upsert" {
+			continue
+		}
+		syncSHA := stringFromPayload(op.Payload, "sync_sha")
+		if syncSHA == "" || syncSHA != workspace.SyncSHA {
+			return nil
+		}
+
+		rejected := make([]model.SyncRejected, 0, len(operations))
+		for _, candidate := range operations {
+			rejected = append(rejected, model.SyncRejected{
+				OperationID: candidate.OperationID,
+				Reason:      "no_changes",
+				Message:     "remote workspace already matches this local snapshot",
+			})
+		}
+		return rejected
+	}
+
+	return nil
+}
+
 func (s *Store) applySyncOperationLocked(workspaceID string, op model.SyncOperation) error {
 	switch op.ResourceType {
 	case "workspace":
@@ -1502,6 +1597,9 @@ func (s *Store) applySyncOperationLocked(workspaceID string, op model.SyncOperat
 		}
 		if name := stringFromPayload(op.Payload, "name"); name != "" {
 			workspace.Name = name
+		}
+		if syncSHA := stringFromPayload(op.Payload, "sync_sha"); syncSHA != "" {
+			workspace.SyncSHA = syncSHA
 		}
 		workspace.Version = nextSyncVersion(workspace.Version, op.BaseVersion)
 		workspace.UpdatedAt = s.now()

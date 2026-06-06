@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
   slug TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
+  sync_sha TEXT NOT NULL DEFAULT '',
   owner_user_id TEXT NOT NULL REFERENCES users(id),
   visibility TEXT NOT NULL DEFAULT 'private',
   default_role_for_requests TEXT NOT NULL DEFAULT 'viewer',
@@ -202,6 +203,7 @@ CREATE TABLE IF NOT EXISTS sync_operations (
 CREATE INDEX IF NOT EXISTS idx_memberships_workspace ON memberships(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_audit_workspace ON audit_logs(workspace_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sync_workspace ON sync_operations(workspace_id, resulting_version);
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS sync_sha TEXT NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT NOT NULL DEFAULT '';
@@ -321,21 +323,21 @@ type modelUserRow struct {
 }
 
 func (s *Store) loadWorkspaces(ctx context.Context) error {
-	rows, err := s.db.Query(ctx, `SELECT id, slug, name, description, owner_user_id, visibility, default_role_for_requests, host_mode, created_at, updated_at, version FROM workspaces`)
+	rows, err := s.db.Query(ctx, `SELECT id, slug, name, description, sync_sha, owner_user_id, visibility, default_role_for_requests, host_mode, created_at, updated_at, version FROM workspaces`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			id, slug, name, description, owner, visibility, defaultRole, hostMode string
-			createdAt, updatedAt                                                  time.Time
-			version                                                               int
+			id, slug, name, description, syncSHA, owner, visibility, defaultRole, hostMode string
+			createdAt, updatedAt                                                           time.Time
+			version                                                                        int
 		)
-		if err := rows.Scan(&id, &slug, &name, &description, &owner, &visibility, &defaultRole, &hostMode, &createdAt, &updatedAt, &version); err != nil {
+		if err := rows.Scan(&id, &slug, &name, &description, &syncSHA, &owner, &visibility, &defaultRole, &hostMode, &createdAt, &updatedAt, &version); err != nil {
 			return err
 		}
-		s.workspaces[id] = &model.Workspace{ID: id, Slug: slug, Name: name, Description: description, OwnerUserID: owner, Visibility: model.Visibility(visibility), DefaultRoleForRequests: model.WorkspaceRole(defaultRole), HostMode: model.HostMode(hostMode), CreatedAt: createdAt, UpdatedAt: updatedAt, Version: version}
+		s.workspaces[id] = &model.Workspace{ID: id, Slug: slug, Name: name, Description: description, SyncSHA: syncSHA, OwnerUserID: owner, Visibility: model.Visibility(visibility), DefaultRoleForRequests: model.WorkspaceRole(defaultRole), HostMode: model.HostMode(hostMode), CreatedAt: createdAt, UpdatedAt: updatedAt, Version: version}
 	}
 	return rows.Err()
 }
@@ -581,10 +583,10 @@ func (s *Store) persistWorkspace(ctx context.Context, workspace *model.Workspace
 	if s.db == nil || workspace == nil {
 		return
 	}
-	_, _ = s.db.Exec(ctx, `INSERT INTO workspaces (id, slug, name, description, owner_user_id, visibility, default_role_for_requests, host_mode, created_at, updated_at, version)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-ON CONFLICT (id) DO UPDATE SET slug = EXCLUDED.slug, name = EXCLUDED.name, description = EXCLUDED.description, owner_user_id = EXCLUDED.owner_user_id, visibility = EXCLUDED.visibility, default_role_for_requests = EXCLUDED.default_role_for_requests, host_mode = EXCLUDED.host_mode, updated_at = EXCLUDED.updated_at, version = EXCLUDED.version`,
-		workspace.ID, workspace.Slug, workspace.Name, workspace.Description, workspace.OwnerUserID, workspace.Visibility, workspace.DefaultRoleForRequests, workspace.HostMode, workspace.CreatedAt, workspace.UpdatedAt, workspace.Version)
+	_, _ = s.db.Exec(ctx, `INSERT INTO workspaces (id, slug, name, description, sync_sha, owner_user_id, visibility, default_role_for_requests, host_mode, created_at, updated_at, version)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+ON CONFLICT (id) DO UPDATE SET slug = EXCLUDED.slug, name = EXCLUDED.name, description = EXCLUDED.description, sync_sha = EXCLUDED.sync_sha, owner_user_id = EXCLUDED.owner_user_id, visibility = EXCLUDED.visibility, default_role_for_requests = EXCLUDED.default_role_for_requests, host_mode = EXCLUDED.host_mode, updated_at = EXCLUDED.updated_at, version = EXCLUDED.version`,
+		workspace.ID, workspace.Slug, workspace.Name, workspace.Description, workspace.SyncSHA, workspace.OwnerUserID, workspace.Visibility, workspace.DefaultRoleForRequests, workspace.HostMode, workspace.CreatedAt, workspace.UpdatedAt, workspace.Version)
 	_, _ = s.db.Exec(ctx, `INSERT INTO sync_checkpoints (workspace_id, checkpoint) VALUES ($1, COALESCE((SELECT checkpoint FROM sync_checkpoints WHERE workspace_id = $1), 0))
 ON CONFLICT (workspace_id) DO NOTHING`, workspace.ID)
 }
@@ -718,6 +720,25 @@ func (s *Store) deleteSession(ctx context.Context, token string) {
 		return
 	}
 	_, _ = s.db.Exec(ctx, `DELETE FROM sessions WHERE token = $1`, token)
+}
+
+func (s *Store) deleteWorkspaceRecords(ctx context.Context, workspaceID string) {
+	if s.db == nil {
+		return
+	}
+	_, _ = s.db.Exec(ctx, `DELETE FROM sync_operations WHERE workspace_id = $1`, workspaceID)
+	_, _ = s.db.Exec(ctx, `DELETE FROM sync_checkpoints WHERE workspace_id = $1`, workspaceID)
+	_, _ = s.db.Exec(ctx, `DELETE FROM audit_logs WHERE workspace_id = $1`, workspaceID)
+	_, _ = s.db.Exec(ctx, `DELETE FROM workspace_hosts WHERE workspace_id = $1`, workspaceID)
+	_, _ = s.db.Exec(ctx, `DELETE FROM join_requests WHERE workspace_id = $1`, workspaceID)
+	_, _ = s.db.Exec(ctx, `DELETE FROM invites WHERE workspace_id = $1`, workspaceID)
+	_, _ = s.db.Exec(ctx, `DELETE FROM memberships WHERE workspace_id = $1`, workspaceID)
+	_, _ = s.db.Exec(ctx, `DELETE FROM variables WHERE environment_id IN (SELECT id FROM environments WHERE workspace_id = $1)`, workspaceID)
+	_, _ = s.db.Exec(ctx, `DELETE FROM environments WHERE workspace_id = $1`, workspaceID)
+	_, _ = s.db.Exec(ctx, `DELETE FROM requests WHERE workspace_id = $1`, workspaceID)
+	_, _ = s.db.Exec(ctx, `DELETE FROM folders WHERE workspace_id = $1`, workspaceID)
+	_, _ = s.db.Exec(ctx, `DELETE FROM collections WHERE workspace_id = $1`, workspaceID)
+	_, _ = s.db.Exec(ctx, `DELETE FROM workspaces WHERE id = $1`, workspaceID)
 }
 
 func (s *Store) persistDeviceFlow(ctx context.Context, flow *model.DeviceFlow) {

@@ -13,6 +13,7 @@
   export let formatDate: (value?: string) => string;
   export let navigate: (route: Route) => void;
   export let reload: () => Promise<void>;
+  export let deleteWorkspace: () => Promise<void>;
   export let createInvite: (event: SubmitEvent) => Promise<void>;
   export let createHost: (event: SubmitEvent) => Promise<void>;
   export let revokeInvite: (inviteId: string) => Promise<void>;
@@ -46,6 +47,7 @@
       <button class="ghost" type="button" on:click={reload}>
         {loadingWorkspace ? 'Refreshing…' : 'Refresh'}
       </button>
+      <button class="ghost danger-button" type="button" on:click={deleteWorkspace}>Delete workspace</button>
     </div>
   </div>
 

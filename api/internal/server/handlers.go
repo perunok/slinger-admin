@@ -232,7 +232,27 @@ func (s *Server) publishWorkspace(w http.ResponseWriter, r *http.Request, user *
 		}
 	}
 	if workspace == nil {
-		writeError(w, http.StatusBadRequest, "workspace_required", "select an existing workspace created by an admin", nil)
+		if err := s.requirePlatformAdmin(user); err != nil {
+			writeError(w, http.StatusBadRequest, "workspace_required", "select an existing workspace created by an admin", nil)
+			return
+		}
+		slug := strings.TrimSpace(req.LocalWorkspace.ProposedSlug)
+		if slug == "" {
+			slug = strings.ToLower(strings.TrimSpace(req.LocalWorkspace.Name))
+			slug = strings.ReplaceAll(slug, " ", "-")
+		}
+		created, err := s.store.CreateWorkspace(user, strings.TrimSpace(req.LocalWorkspace.Name), slug, "")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "workspace_create_failed", err.Error(), nil)
+			return
+		}
+		workspace = created
+		if resolvedMembership, ok := s.store.Membership(workspace.ID, user.ID); ok {
+			membership = resolvedMembership
+		}
+	}
+	if workspace == nil || membership == nil {
+		writeError(w, http.StatusBadRequest, "workspace_required", "unable to resolve a publish target workspace", nil)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -397,6 +417,16 @@ func (s *Server) handleWorkspaceRoutes(w http.ResponseWriter, r *http.Request, u
 			writeJSON(w, http.StatusOK, map[string]any{"workspace": workspace, "membership": map[string]any{"role": membership.Role}})
 		case http.MethodPatch:
 			s.patchWorkspace(w, r, workspace)
+		case http.MethodDelete:
+			if !s.canManageMembers(user, membership) {
+				writeError(w, http.StatusForbidden, "forbidden", "insufficient workspace role", nil)
+				return
+			}
+			if err := s.store.DeleteWorkspace(workspace.ID); err != nil {
+				writeError(w, http.StatusNotFound, "not_found", err.Error(), nil)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		default:
 			http.NotFound(w, r)
 		}

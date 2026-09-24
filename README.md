@@ -1,5 +1,10 @@
 # Slinger Cloud API
 
+> **Implementation status:** the API is now implemented in TypeScript in [`server/`](server/README.md) (Fastify + Prisma/PostgreSQL),
+> following [`docs/api-contract-v2.md`](docs/api-contract-v2.md), which overrides this document where they differ (auth routes are under
+> `/v1/auth/*`, realtime/extension/OIDC items below are roadmap only). The Go code in `api/` is the legacy implementation, kept for reference.
+> OpenAPI: [`server/openapi.yaml`](server/openapi.yaml).
+
 Kickoff README for the new backend repo that will power Slinger cloud sync, collaboration, workspace hosting, and administration.
 
 ---

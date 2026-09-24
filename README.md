@@ -162,3 +162,7 @@ docker-compose.yml, .env.example, deploy-manual.md
 OAuth2/LDAP/SAML, a realtime/collaboration service (the API only issues signed tokens), the extension/marketplace platform,
 GraphQL/gRPC, e-mail delivery (invite tokens are returned by the API and shown once in the dashboard), Redis. See
 [`server/README.md`](server/README.md#known-limitations--not-built) for known limitations (for example the login rate limiter is per-process unless `SLINGER_RATE_LIMIT_STORE=postgres`).
+
+## License
+
+Released under the [MIT License](LICENSE).

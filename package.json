@@ -9,5 +9,6 @@
     "test:server": "npm --prefix server test",
     "test:dashboard": "npm --prefix admin-dashboard test",
     "e2e": "node e2e/run.mjs"
-  }
+  },
+  "license": "MIT"
 }

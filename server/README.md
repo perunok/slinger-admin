@@ -1,8 +1,8 @@
 # Slinger Cloud server
 
-Node.js 22 / TypeScript implementation of the Slinger Cloud API (Fastify + Prisma/PostgreSQL + zod). It replaces the
-old Go service in `../api/` and follows [`../docs/api-contract-v2.md`](../docs/api-contract-v2.md) (which overrides the
-top-level `../README.md` where they differ).
+Node.js 22 / TypeScript implementation of the Slinger Cloud API (Fastify + Prisma/PostgreSQL + zod). It follows
+[`../docs/api-contract-v2.md`](../docs/api-contract-v2.md) (which overrides the original design brief
+[`../docs/product-vision.md`](../docs/product-vision.md) where they differ). Project overview: [`../README.md`](../README.md).
 
 - **Machine-readable API:** [`openapi.yaml`](openapi.yaml) (OpenAPI 3.0, generated from the zod schemas of the routes that are
   actually registered; a test fails if it drifts). Regenerate with `npm run openapi`.
@@ -324,9 +324,9 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
   `GET /v1/admin/workspaces?q=`, `GET|DELETE /v1/admin/workspaces/{workspace_id}`, `GET /v1/admin/audit-logs?action=&actor_user_id=&workspace_id=`,
   `GET /v1/admin/health` (`{status, services:{api, postgres}, timestamp}`, 503 if the DB is down), `GET /v1/admin/stats`.
 
-## Deviations from the README / contract (deliberate)
+## Deviations from the design brief / contract (deliberate)
 
-- Auth routes are under `/v1/auth/*` (contract), not `/v1/account/*` (old Go code). `GET /v1/me` is unchanged.
+- Auth routes are under `/v1/auth/*` (contract), not `/v1/account/*` (the earlier prototype). `GET /v1/me` is unchanged.
 - Added beyond the contract: `POST /v1/auth/device/approve`, `GET /v1/auth/browser/session`, `POST /v1/me/password`, `DELETE`
   endpoints for content, `PATCH/DELETE` for invites/hosts, `POST .../hosts/{id}/verify`, `PATCH /v1/admin/users/{id}`, `GET /v1/admin/stats`,
   workspace/admin `audit-logs` ordering option, `disabled` users.

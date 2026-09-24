@@ -1,15 +1,15 @@
 # Slinger Cloud API — v2 contract (TypeScript rewrite)
 
 This is the contract for the TypeScript rewrite of `slinger-admin`, on the
-`ts-rewrite` branch. Read `README.md` first — it documents most resource
+`ts-rewrite` branch. Read `product-vision.md` first — it documents most resource
 shapes and endpoints in detail with JSON examples, and that documentation
 still applies **except** for the deltas listed below, which fix concrete bugs
-found in a security review of the old Go implementation. When in doubt,
-prefer this document over the README.
+found in a security review of the previous (pre-TypeScript) implementation. When in doubt,
+prefer this document over `product-vision.md`.
 
 Out of scope for this rewrite (do not build): OAuth2/LDAP/SAML, realtime
 collaboration (Yjs/Centrifugo), the extension/marketplace platform, GraphQL/
-gRPC. Keep those as documented-but-unbuilt roadmap in the README.
+gRPC. Keep those as documented-but-unbuilt roadmap in `product-vision.md`.
 
 ## Stack
 
@@ -30,7 +30,7 @@ Directory: `slinger-admin/server/` (replaces `slinger-admin/api/`). Keep
 Two login flows, both issuing the same kind of access/refresh JWT pair, sharing `GET /v1/me`:
 
 1. **Desktop device flow** (unchanged from README): `POST /v1/auth/device/start`, `POST /v1/auth/device/poll`, `POST /v1/auth/refresh`, `POST /v1/auth/logout`.
-2. **Browser/dashboard flow** (new, explicit — the old Go code's dashboard login was inconsistent with the README and used `username` instead of `email`):
+2. **Browser/dashboard flow** (new, explicit — the previous implementation's dashboard login was inconsistent with the README and used `username` instead of `email`):
    - `POST /v1/auth/browser/login` — body `{ email, password }` → on success, sets an `httpOnly`, `Secure` (in production), `SameSite=Lax` session cookie containing a signed session token, and returns `{ user, csrf_token }` in the JSON body.
    - `POST /v1/auth/browser/logout` — clears the session cookie, invalidates the server-side session record.
    - Every mutating request authenticated via the browser session cookie (not a Bearer token) MUST also carry a matching `X-CSRF-Token` header equal to the `csrf_token` issued at login (stored server-side alongside the session, compared with a constant-time check). Reject with `403 forbidden` (`code: "csrf_invalid"`) if missing/mismatched. Bearer-token requests (desktop app) are exempt — CSRF only matters for cookie auth.
@@ -83,11 +83,11 @@ Explicit allowlist via `SLINGER_ALLOWED_ORIGINS` (comma-separated), never a refl
 
 ## Prisma schema — core models (fill in fields per README's resource shapes; this list is the minimum, not exhaustive)
 
-`User`, `Session` (browser sessions: id, userId, csrfTokenHash, expiresAt), `RefreshToken`, `Workspace`, `Membership` (workspaceId, userId, role, status), `Invite` (workspaceId, email, role, tokenHash, expiresAt, status), `JoinRequest`, `WorkspaceHost`, `Collection`, `Folder`, `Request`, `Environment`, `EnvironmentVariable` (with `isSecret`/`maskedValue` handling — mask server-side before serializing, same principle as the desktop app: never return a secret's raw value once `isSecret = true` after the initial write), `SyncClient`, `AuditLog` (append-only; write one row for every workspace-admin-level or platform-admin-level mutation: invite sent, role changed, member removed, workspace deleted, host added — this is what `GET /v1/workspaces/{id}/audit-logs` and `GET /v1/admin/audit-logs` read from, and it did not exist at all in the old Go code).
+`User`, `Session` (browser sessions: id, userId, csrfTokenHash, expiresAt), `RefreshToken`, `Workspace`, `Membership` (workspaceId, userId, role, status), `Invite` (workspaceId, email, role, tokenHash, expiresAt, status), `JoinRequest`, `WorkspaceHost`, `Collection`, `Folder`, `Request`, `Environment`, `EnvironmentVariable` (with `isSecret`/`maskedValue` handling — mask server-side before serializing, same principle as the desktop app: never return a secret's raw value once `isSecret = true` after the initial write), `SyncClient`, `AuditLog` (append-only; write one row for every workspace-admin-level or platform-admin-level mutation: invite sent, role changed, member removed, workspace deleted, host added — this is what `GET /v1/workspaces/{id}/audit-logs` and `GET /v1/admin/audit-logs` read from, and it did not exist at all in the previous implementation).
 
-Every mutable resource has `version INT` and update endpoints must accept the client's expected `version` and reject with `409 conflict` (`code: "version_mismatch"`) on mismatch (optimistic concurrency — the old Go code accepted a `version` field in some payloads but never actually checked it).
+Every mutable resource has `version INT` and update endpoints must accept the client's expected `version` and reject with `409 conflict` (`code: "version_mismatch"`) on mismatch (optimistic concurrency — the previous implementation accepted a `version` field in some payloads but never actually checked it).
 
-## What to explicitly test (the old server_test.go's gap list)
+## What to explicitly test (the previous implementation's test gap list)
 
 - A workspace **Owner** (not a platform admin) successfully invites, approves a join request, edits content, and is blocked from platform-admin-only routes.
 - A workspace **Viewer** is blocked from all write routes including sync push.

@@ -77,5 +77,4 @@ Database data lives in the `postgres-data` volume; Caddy certificates in `caddy-
 
 - Logs: `docker compose logs -f server` (structured JSON; authorization headers, cookies and secrets are never logged).
 - Backups: `docker compose exec postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql`.
-- Redis, the Go `worker` and the `realtime` service from the old stack are gone; the TypeScript server only issues realtime/collab
-  tokens and includes no realtime service.
+- There is no Redis, worker or realtime service in this stack; the server only issues realtime/collab tokens.

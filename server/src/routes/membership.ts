@@ -309,7 +309,8 @@ export function registerMembershipRoutes(app: FastifyInstance): void {
           data: {
             id: newId(), workspaceId: ws.id, requesterUserId: userId, message: body.message,
             requestedRole: body.requested_role
-          }
+          },
+          include: { requester: true }
         });
       });
       return { join_request: toJoinRequest(jr) };
@@ -332,6 +333,7 @@ export function registerMembershipRoutes(app: FastifyInstance): void {
       const args = pageArgs(query);
       const rows = await prisma.joinRequest.findMany({
         where: withCursor({ workspaceId: params.workspaceId, ...(query.status && { status: query.status }) }, args),
+        include: { requester: true },
         orderBy: args.orderBy,
         take: args.take
       });
@@ -410,7 +412,7 @@ export function registerMembershipRoutes(app: FastifyInstance): void {
           resourceId: cur.id, workspaceId: ws.id, requestId: req.id,
           details: { requester_user_id: cur.requesterUserId }
         });
-        return tx.joinRequest.findUniqueOrThrow({ where: { id: cur.id } });
+        return tx.joinRequest.findUniqueOrThrow({ where: { id: cur.id }, include: { requester: true } });
       });
       return { join_request: toJoinRequest(jr) };
     }

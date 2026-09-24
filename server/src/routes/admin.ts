@@ -288,6 +288,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
           },
           a
         ),
+        include: { actor: { select: { email: true } } },
         orderBy: a.orderBy,
         take: a.take
       });
@@ -318,6 +319,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
           },
           a
         ),
+        include: { actor: { select: { email: true } } },
         orderBy: a.orderBy,
         take: a.take
       });

@@ -120,6 +120,9 @@ describe("join requests", () => {
     expect((await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests`, as: u1, body: {} })).statusCode).toBe(409);
     const list = await call(app, { method: "GET", url: `/v1/workspaces/${ws.id}/join-requests?status=pending`, as: owner });
     expect(list.json().items).toHaveLength(2);
+    // the dashboard shows who is asking: requester identity is denormalised into every join-request payload
+    expect(list.json().items[0]).toMatchObject({ requester_user_id: u1.id, requester_email: u1.email, requester_display_name: `User ${u1.email}` });
+    expect(r1).toMatchObject({ requester_email: u1.email });
     // non-admins can't list
     expect((await call(app, { method: "GET", url: `/v1/workspaces/${ws.id}/join-requests`, as: u1 })).statusCode).toBe(403);
 
@@ -131,7 +134,7 @@ describe("join requests", () => {
     expect((await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests/${r1.id}/approve`, as: owner, body: {} })).statusCode).toBe(409);
 
     const rej = await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests/${r2.id}/reject`, as: owner, body: {} });
-    expect(rej.json().join_request.status).toBe("rejected");
+    expect(rej.json().join_request).toMatchObject({ status: "rejected", requester_email: u2.email });
     expect(await prisma.membership.count({ where: { workspaceId: ws.id, userId: u2.id } })).toBe(0);
     expect((await call(app, { method: "GET", url: `/v1/workspaces/${ws.id}`, as: u2 })).statusCode).toBe(403);
     // after rejection the user may ask again
@@ -211,6 +214,7 @@ describe("audit logs", () => {
       "host.added", "host.removed", "member.removed"
     ]);
     expect(logs.items[0].actor_user_id).toBe(owner.id);
+    expect(logs.items[0].actor_email).toBe(owner.email);
     expect(logs.items[7].request_id).toBe("audit-req-1");
     expect(JSON.stringify(logs)).not.toContain(inv.invite_token);
     expect(logs.items[3].details).toMatchObject({ from: "viewer", to: "editor", user_id: member.id });

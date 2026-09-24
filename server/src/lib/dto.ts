@@ -35,7 +35,8 @@ export const inviteSchema = z.object({
   invited_by_user_id: id.nullable(), expires_at: ts, created_at: ts, updated_at: ts, version: z.number().int()
 });
 export const joinRequestSchema = z.object({
-  id, workspace_id: id, requester_user_id: id, message: z.string(),
+  id, workspace_id: id, requester_user_id: id, requester_email: z.string(), requester_display_name: z.string(),
+  message: z.string(),
   status: z.enum(["pending", "approved", "rejected"]), requested_role: workspaceRoleEnum,
   created_at: ts, updated_at: ts, version: z.number().int()
 });
@@ -66,7 +67,7 @@ export const variableSchema = z.object({
   is_secret: z.boolean(), created_at: ts, updated_at: ts, version: z.number().int()
 });
 export const auditLogSchema = z.object({
-  id, actor_user_id: id.nullable(), action: z.string(), resource_type: z.string(), resource_id: z.string(),
+  id, actor_user_id: id.nullable(), actor_email: z.string().nullable(), action: z.string(), resource_type: z.string(), resource_id: z.string(),
   workspace_id: id.nullable(), request_id: z.string().nullable(), details: z.record(z.unknown()), created_at: ts
 });
 export const pageSchema = z.object({ next_cursor: z.string().nullable(), has_more: z.boolean() });
@@ -96,8 +97,9 @@ export const toInvite = (i: Invite) => ({
   invited_by_user_id: i.invitedByUserId, expires_at: iso(i.expiresAt), created_at: iso(i.createdAt),
   updated_at: iso(i.updatedAt), version: i.version
 });
-export const toJoinRequest = (j: JoinRequest) => ({
-  id: j.id, workspace_id: j.workspaceId, requester_user_id: j.requesterUserId, message: j.message,
+export const toJoinRequest = (j: JoinRequest & { requester: Pick<User, "email" | "displayName"> }) => ({
+  id: j.id, workspace_id: j.workspaceId, requester_user_id: j.requesterUserId, requester_email: j.requester.email,
+  requester_display_name: j.requester.displayName, message: j.message,
   status: j.status, requested_role: j.requestedRole, created_at: iso(j.createdAt),
   updated_at: iso(j.updatedAt), version: j.version
 });
@@ -132,8 +134,8 @@ export const toVariable = (v: EnvironmentVariable) => ({
   value: v.isSecret ? null : v.value, masked_value: v.isSecret ? SECRET_MASK : null,
   is_secret: v.isSecret, created_at: iso(v.createdAt), updated_at: iso(v.updatedAt), version: v.version
 });
-export const toAuditLog = (a: AuditLog) => ({
-  id: a.id, actor_user_id: a.actorUserId, action: a.action, resource_type: a.resourceType,
+export const toAuditLog = (a: AuditLog & { actor: Pick<User, "email"> | null }) => ({
+  id: a.id, actor_user_id: a.actorUserId, actor_email: a.actor?.email ?? null, action: a.action, resource_type: a.resourceType,
   resource_id: a.resourceId, workspace_id: a.workspaceId, request_id: a.requestId,
   details: (a.details ?? {}) as Record<string, unknown>, created_at: iso(a.createdAt)
 });

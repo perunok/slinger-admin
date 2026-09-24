@@ -2438,6 +2438,10 @@ paths:
                         type: string
                       requester_user_id:
                         type: string
+                      requester_email:
+                        type: string
+                      requester_display_name:
+                        type: string
                       message:
                         type: string
                       status:
@@ -2465,6 +2469,8 @@ paths:
                       - id
                       - workspace_id
                       - requester_user_id
+                      - requester_email
+                      - requester_display_name
                       - message
                       - status
                       - requested_role
@@ -2559,6 +2565,10 @@ paths:
                           type: string
                         requester_user_id:
                           type: string
+                        requester_email:
+                          type: string
+                        requester_display_name:
+                          type: string
                         message:
                           type: string
                         status:
@@ -2586,6 +2596,8 @@ paths:
                         - id
                         - workspace_id
                         - requester_user_id
+                        - requester_email
+                        - requester_display_name
                         - message
                         - status
                         - requested_role
@@ -2837,6 +2849,10 @@ paths:
                         type: string
                       requester_user_id:
                         type: string
+                      requester_email:
+                        type: string
+                      requester_display_name:
+                        type: string
                       message:
                         type: string
                       status:
@@ -2864,6 +2880,8 @@ paths:
                       - id
                       - workspace_id
                       - requester_user_id
+                      - requester_email
+                      - requester_display_name
                       - message
                       - status
                       - requested_role
@@ -7095,6 +7113,9 @@ paths:
                         actor_user_id:
                           type: string
                           nullable: true
+                        actor_email:
+                          type: string
+                          nullable: true
                         action:
                           type: string
                         resource_type:
@@ -7116,6 +7137,7 @@ paths:
                       required:
                         - id
                         - actor_user_id
+                        - actor_email
                         - action
                         - resource_type
                         - resource_id
@@ -7233,6 +7255,9 @@ paths:
                         actor_user_id:
                           type: string
                           nullable: true
+                        actor_email:
+                          type: string
+                          nullable: true
                         action:
                           type: string
                         resource_type:
@@ -7254,6 +7279,7 @@ paths:
                       required:
                         - id
                         - actor_user_id
+                        - actor_email
                         - action
                         - resource_type
                         - resource_id

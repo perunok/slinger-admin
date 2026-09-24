@@ -298,6 +298,7 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 
 (See `openapi.yaml` for complete schemas.)
 
+- **Audit log**: `id, actor_user_id, actor_email (null for system/deleted users), action, resource_type, resource_id, workspace_id, request_id, details, created_at`.
 - **User**: `id, email, display_name, platform_role` (`super_admin|platform_admin|user`); admin views add `disabled, created_at, updated_at`.
 - **Workspace**: `id, slug, name, description, owner_user_id, visibility, default_role_for_requests, host_mode, created_at, updated_at, version`;
   list items add `role`. Create body `{name, slug?, description?}`. Patch body `{name?, description?, visibility?, default_role_for_requests?, version}`.
@@ -306,7 +307,7 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 - **Member**: `id, workspace_id, user_id, email, display_name, role, status, joined_at, ..., version`; `PATCH {role: admin|editor|viewer, version}`.
 - **Invite**: create `{email, role}` -> `{invite, invite_token}` (token returned once; deliver it out of band, email sending is stubbed);
   accept `POST /v1/invites/{invite_id}/accept {invite_token}` -> `{workspace_id, membership:{role}}`.
-- **Join request**: create `{message?, requested_role?}` -> `{join_request}`; approve `{role?, version?}` -> `{membership}`; reject `{version?}`.
+- **Join request**: `{id, requester_user_id, requester_email, requester_display_name, message, status, requested_role, version, ...}`; create `{message?, requested_role?}` -> `{join_request}`; approve `{role?, version?}` -> `{membership}`; reject `{version?}`.
 - **Host**: `{host, kind: dedicated_subdomain|custom_domain}` -> `{host:{id,host,kind,status,tls_status,...}, verification:{dns_record_type:"TXT", dns_record_name, dns_record_value}|null}`;
   `POST .../hosts/{host_id}/verify` -> `{host, verified}`.
 - **Content**: collection `{name}`; folder `{name, parent_folder_id?}`; request `{name, method, url, document_json, folder_id?}`; environment `{name}`;

@@ -1,0 +1,365 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PlatformRole {
+  super_admin
+  platform_admin
+  user
+}
+
+enum WorkspaceRole {
+  owner
+  admin
+  editor
+  viewer
+}
+
+enum MembershipStatus {
+  active
+  removed
+}
+
+enum InviteStatus {
+  pending
+  accepted
+  revoked
+  expired
+}
+
+enum JoinRequestStatus {
+  pending
+  approved
+  rejected
+}
+
+enum HostKind {
+  dedicated_subdomain
+  custom_domain
+}
+
+enum HostStatus {
+  active
+  pending_verification
+}
+
+enum TlsStatus {
+  pending
+  ready
+}
+
+model User {
+  id           String       @id @default(uuid())
+  email        String       @unique
+  displayName  String
+  passwordHash String?
+  platformRole PlatformRole @default(user)
+  disabledAt   DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  memberships    Membership[]
+  sessions       Session[]
+  refreshTokens  RefreshToken[]
+  invitesSent    Invite[]       @relation("InviteSender")
+  joinRequests   JoinRequest[]
+  auditLogs      AuditLog[]
+  deviceFlows    DeviceFlow[]
+  ownedWorkspaces Workspace[]   @relation("WorkspaceOwner")
+  syncClients    SyncClient[]
+
+  @@map("users")
+}
+
+model Session {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash     String   @unique
+  csrfTokenHash String
+  expiresAt     DateTime
+  createdAt     DateTime @default(now())
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  tokenHash String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+enum DeviceFlowStatus {
+  pending
+  approved
+  consumed
+}
+
+model DeviceFlow {
+  id             String           @id @default(uuid())
+  deviceCodeHash String           @unique
+  userCode       String           @unique
+  clientName     String
+  deviceName     String
+  status         DeviceFlowStatus @default(pending)
+  userId         String?
+  user           User?            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt      DateTime         @default(now())
+  expiresAt      DateTime
+
+  @@map("device_flows")
+}
+
+model Workspace {
+  id                     String        @id @default(uuid())
+  slug                   String        @unique
+  name                   String
+  description            String        @default("")
+  ownerUserId            String
+  owner                  User          @relation("WorkspaceOwner", fields: [ownerUserId], references: [id])
+  visibility             String        @default("private")
+  defaultRoleForRequests WorkspaceRole @default(viewer)
+  hostMode               String        @default("shared")
+  syncCheckpoint         Int           @default(0)
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+  version                Int           @default(1)
+
+  memberships    Membership[]
+  invites        Invite[]
+  joinRequests   JoinRequest[]
+  hosts          WorkspaceHost[]
+  collections    Collection[]
+  folders        Folder[]
+  requests       Request[]
+  environments   Environment[]
+  syncOperations SyncOperation[]
+
+  @@map("workspaces")
+}
+
+model Membership {
+  id          String            @id @default(uuid())
+  workspaceId String
+  workspace   Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        WorkspaceRole
+  status      MembershipStatus  @default(active)
+  joinedAt    DateTime          @default(now())
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  version     Int               @default(1)
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@map("memberships")
+}
+
+model Invite {
+  id              String       @id @default(uuid())
+  workspaceId     String
+  workspace       Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  email           String
+  role            WorkspaceRole
+  status          InviteStatus @default(pending)
+  tokenHash       String
+  invitedByUserId String?
+  invitedBy       User?        @relation("InviteSender", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+  expiresAt       DateTime
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  version         Int          @default(1)
+
+  @@index([workspaceId])
+  @@index([email])
+  @@map("invites")
+}
+
+model JoinRequest {
+  id              String            @id @default(uuid())
+  workspaceId     String
+  workspace       Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  requesterUserId String
+  requester       User              @relation(fields: [requesterUserId], references: [id], onDelete: Cascade)
+  message         String            @default("")
+  status          JoinRequestStatus @default(pending)
+  requestedRole   WorkspaceRole
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  version         Int               @default(1)
+
+  @@index([workspaceId])
+  @@map("join_requests")
+}
+
+model WorkspaceHost {
+  id          String     @id @default(uuid())
+  workspaceId String
+  workspace   Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  host        String     @unique
+  kind        HostKind
+  status      HostStatus @default(pending_verification)
+  tlsStatus   TlsStatus  @default(pending)
+  verificationToken String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  version     Int        @default(1)
+
+  @@index([workspaceId])
+  @@map("workspace_hosts")
+}
+
+model Collection {
+  id          String    @id @default(uuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name        String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  version     Int       @default(1)
+
+  folders  Folder[]
+  requests Request[]
+
+  @@index([workspaceId])
+  @@map("collections")
+}
+
+model Folder {
+  id             String     @id @default(uuid())
+  workspaceId    String
+  workspace      Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  collectionId   String
+  collection     Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  parentFolderId String?
+  parentFolder   Folder?    @relation("FolderParent", fields: [parentFolderId], references: [id], onDelete: Cascade)
+  childFolders   Folder[]   @relation("FolderParent")
+  name           String
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  version        Int        @default(1)
+
+  requests Request[]
+
+  @@index([workspaceId])
+  @@index([collectionId])
+  @@map("folders")
+}
+
+model Request {
+  id           String     @id @default(uuid())
+  workspaceId  String
+  workspace    Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  collectionId String
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  folderId     String?
+  folder       Folder?    @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  name         String
+  method       String
+  url          String
+  documentJson String
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  version      Int        @default(1)
+
+  @@index([workspaceId])
+  @@index([collectionId])
+  @@map("requests")
+}
+
+model Environment {
+  id          String    @id @default(uuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name        String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  version     Int       @default(1)
+
+  variables EnvironmentVariable[]
+
+  @@index([workspaceId])
+  @@map("environments")
+}
+
+model EnvironmentVariable {
+  id            String      @id @default(uuid())
+  environmentId String
+  environment   Environment @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+  key           String
+  value         String?
+  isSecret      Boolean     @default(false)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  version       Int         @default(1)
+
+  @@unique([environmentId, key])
+  @@map("environment_variables")
+}
+
+model SyncClient {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clientName    String?
+  clientVersion String?
+  deviceName    String?
+  platform      String?
+  registeredAt  DateTime @default(now())
+
+  @@index([userId])
+  @@map("sync_clients")
+}
+
+model SyncOperation {
+  id               String    @id @default(uuid())
+  operationId      String
+  workspaceId      String
+  workspace        Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  seq              Int
+  clientId         String?
+  resourceType     String
+  resourceId       String
+  op               String
+  baseVersion      Int       @default(0)
+  payload          Json
+  resultingVersion Int
+  occurredAt       DateTime  @default(now())
+
+  @@unique([workspaceId, operationId])
+  @@index([workspaceId, seq])
+  @@map("sync_operations")
+}
+
+// Append-only. workspaceId is deliberately NOT a foreign key so the trail
+// survives workspace deletion (including the deletion event itself).
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorUserId  String?
+  actor        User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  action       String
+  resourceType String   @default("")
+  resourceId   String   @default("")
+  workspaceId  String?
+  requestId    String?
+  details      Json?
+  createdAt    DateTime @default(now())
+
+  @@index([workspaceId, createdAt])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

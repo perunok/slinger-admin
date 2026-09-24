@@ -80,6 +80,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   // ---- request id + strict origin policy ----
   app.addHook("onRequest", async (req, reply) => {
     reply.header("X-Request-Id", req.id);
+    // Responses carry tokens/PII and are per-user: never let a proxy or browser cache them.
+    reply.header("Cache-Control", "no-store");
     const origin = req.headers.origin;
     if (origin) {
       const allowed = isOriginAllowed(cfg, origin, req.headers.host);

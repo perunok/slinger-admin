@@ -111,6 +111,7 @@ describe("body handling", () => {
     const res = await call(app, { method: "GET", url: "/healthz" });
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
     expect(res.headers["x-powered-by"]).toBeUndefined();
+    expect(res.headers["cache-control"]).toBe("no-store");
     // plain-HTTP deployments must keep working: no forced upgrade, no HSTS unless cookies are Secure
     expect(String(res.headers["content-security-policy"])).not.toContain("upgrade-insecure-requests");
     expect(res.headers["strict-transport-security"]).toBeUndefined();

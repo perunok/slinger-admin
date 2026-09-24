@@ -244,6 +244,7 @@ describe("cross-workspace IDOR", () => {
     expect(r.statusCode).toBe(404);
     const own = await makeCollection(app, ownerA, wsA.id);
     const r2 = await call(app, { method: "POST", url: `/v1/workspaces/${wsA.id}/collections/${own.id}/requests`, as: ownerA, body: { name: "x", url: "https://x.test", folder_id: b.folder.id } });
-    expect(r2.statusCode).toBe(400); // foreign folder id is rejected, not linked
+    expect(r2.statusCode).toBe(404); // foreign folder id looks exactly like a missing one, and is not linked
+    expect(await prisma.request.count({ where: { workspaceId: wsA.id, folderId: b.folder.id } })).toBe(0);
   });
 });

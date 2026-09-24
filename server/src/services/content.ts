@@ -161,11 +161,18 @@ export async function deleteCollection(tx: Tx, wsId: string, id: string, expecte
 }
 
 // ---------------------------------------------------------------- folders
+/** A folder absent from the workspace is not_found; one living in another collection is an invalid reference. */
+async function missingFolder(tx: Tx, wsId: string, folderId: string, field: string): Promise<AppError> {
+  const elsewhere = await tx.folder.findFirst({ where: { id: folderId, workspaceId: wsId }, select: { id: true } });
+  return elsewhere
+    ? new AppError("invalid_request", `${field} belongs to another collection`)
+    : notFound("folder");
+}
 async function assertParentFolder(tx: Tx, wsId: string, collectionId: string, parentId: string | null | undefined, selfId?: string) {
   if (!parentId) return;
   if (parentId === selfId) throw new AppError("invalid_request", "a folder cannot be its own parent");
   const parent = await tx.folder.findFirst({ where: { id: parentId, workspaceId: wsId, collectionId } });
-  if (!parent) throw new AppError("invalid_request", "parent_folder_id does not exist in this collection");
+  if (!parent) throw await missingFolder(tx, wsId, parentId, "parent_folder_id");
   // Walk up to make sure `selfId` is not an ancestor of the new parent (no cycles).
   if (selfId) {
     let cur: string | null = parent.parentFolderId;
@@ -232,7 +239,7 @@ export async function deleteFolder(tx: Tx, wsId: string, id: string, expected?: 
 async function assertRequestFolder(tx: Tx, wsId: string, collectionId: string, folderId: string | null | undefined) {
   if (!folderId) return;
   const f = await tx.folder.findFirst({ where: { id: folderId, workspaceId: wsId, collectionId } });
-  if (!f) throw new AppError("invalid_request", "folder_id does not exist in this collection");
+  if (!f) throw await missingFolder(tx, wsId, folderId, "folder_id");
 }
 export async function createRequest(tx: Tx, wsId: string, collectionId: string, d: z.infer<typeof requestData>, ctx?: WriteCtx, id?: string) {
   const col = await tx.collection.findFirst({ where: { id: collectionId, workspaceId: wsId } });
@@ -382,7 +389,10 @@ export async function syncPutVariable(
   if (d.is_secret && d.value !== null) {
     throw new AppError("invalid_request", "secret values must not be synced: send value null with is_secret true");
   }
-  const clash = await tx.environmentVariable.findUnique({ where: { environmentId_key: { environmentId: d.environment_id, key: d.key } } });
+  // Ownership first: the duplicate-key lookup below must never reveal another workspace's variables.
+  const env = await tx.environment.findFirst({ where: { id: d.environment_id, workspaceId: wsId } });
+  if (!env) throw notFound("environment");
+  const clash = await tx.environmentVariable.findUnique({ where: { environmentId_key: { environmentId: env.id, key: d.key } } });
   if (clash && clash.id !== id) {
     throw new AppError("conflict", "a variable with this key already exists in the environment", { reason: "duplicate_key", existing_resource_id: clash.id });
   }
@@ -398,8 +408,6 @@ export async function syncPutVariable(
     await ensureUpdated(res.count, () => tx.environmentVariable.findFirst({ where: { id, environment: { workspaceId: wsId } } }));
     row = await tx.environmentVariable.findFirstOrThrow({ where: { id, environment: { workspaceId: wsId } } });
   } else {
-    const env = await tx.environment.findFirst({ where: { id: d.environment_id, workspaceId: wsId } });
-    if (!env) throw notFound("environment");
     row = await tx.environmentVariable.create({
       data: { id, environmentId: d.environment_id, key: d.key, value: d.is_secret ? null : (d.value ?? ""), isSecret: d.is_secret }
     });

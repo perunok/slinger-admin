@@ -862,3 +862,31 @@ describe("audit and rate limits", () => {
     }
   });
 });
+
+describe("cross-workspace isolation of variable keys", () => {
+  it("never reveals another workspace's variable through duplicate_key", async () => {
+    const a = await setup();
+    const b = await setup();
+    const envA = newId(), varA = newId();
+    await pushOk(a, [op({ resource_type: "environment", resource_id: envA, op: "upsert", payload: { name: "A" } })]);
+    await pushOk(a, [op({ resource_type: "environment_variable", resource_id: varA, op: "upsert", payload: { environment_id: envA, key: "HOST", value: "a.test", is_secret: false } })]);
+
+    // B names A's environment with A's existing key: must look exactly like a missing environment.
+    const probe = await pushOk(b, [op({ resource_type: "environment_variable", resource_id: newId(), op: "upsert", payload: { environment_id: envA, key: "HOST", value: "x", is_secret: false } })]);
+    expect(probe.rejected[0]).toMatchObject({ reason: "not_found" });
+    expect(probe.rejected[0].conflicting_resource_id ?? null).toBeNull();
+    expect(JSON.stringify(probe)).not.toContain(varA);
+  });
+});
+
+describe("missing folder references", () => {
+  it("is not_found when the folder does not exist, invalid when it is in another collection", async () => {
+    const w = await setup();
+    const col = newId();
+    await pushOk(w, [colOp(col)]);
+    const gone = await pushOk(w, [op({ resource_type: "request", resource_id: newId(), op: "upsert", payload: reqPayload(col, { folder_id: newId() }) })]);
+    expect(gone.rejected[0]).toMatchObject({ reason: "not_found" });
+    const orphanFolder = await pushOk(w, [op({ resource_type: "folder", resource_id: newId(), op: "upsert", payload: { collection_id: col, parent_folder_id: newId(), name: "f" } })]);
+    expect(orphanFolder.rejected[0]).toMatchObject({ reason: "not_found" });
+  });
+});

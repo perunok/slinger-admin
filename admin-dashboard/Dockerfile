@@ -7,5 +7,6 @@ RUN npm install && npm run build
 FROM node:22-alpine
 WORKDIR /app/admin-dashboard
 COPY --from=build /app/admin-dashboard ./
+RUN chmod +x /app/admin-dashboard/entrypoint.sh
 EXPOSE 4173
-CMD ["npm", "run", "preview"]
+CMD ["/app/admin-dashboard/entrypoint.sh"]

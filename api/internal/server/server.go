@@ -139,10 +139,7 @@ func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) {
 	if origin == "" {
 		return
 	}
-	allowed := env("SLINGER_ADMIN_DASHBOARD_URL", "http://localhost:5174")
-	if origin != allowed {
-		return
-	}
+	w.Header().Set("Vary", "Origin")
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id")

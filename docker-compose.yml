@@ -2,65 +2,55 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: slinger
-      POSTGRES_USER: slinger
-      POSTGRES_PASSWORD: slinger
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${POSTGRES_DB:-slinger}
+      POSTGRES_USER: ${POSTGRES_USER:-slinger}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-slinger}
+    expose:
+      - "5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    expose:
+      - "6379"
 
   api:
-    build:
-      context: .
-      dockerfile: api/Dockerfile
+    image: ${SLINGER_API_IMAGE:-slinger-api:latest}
     environment:
-      DATABASE_URL: postgres://slinger:slinger@postgres:5432/slinger?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-slinger}:${POSTGRES_PASSWORD:-slinger}@postgres:5432/${POSTGRES_DB:-slinger}?sslmode=disable
       SLINGER_API_ADDR: :8080
-      SLINGER_ADMIN_BOOTSTRAP: '[{"username":"admin","password":"admin","email":"henokm@act.com.et","display_name":"Bootstrap Admin","platform_role":"super_admin"}]'
-      SLINGER_BASE_URL: http://localhost:8080
-      SLINGER_ADMIN_DASHBOARD_URL: http://localhost:5174
-      SLINGER_SIGNING_SECRET: change-me-in-production
+      SLINGER_ADMIN_BOOTSTRAP: ${SLINGER_ADMIN_BOOTSTRAP:-[{"username":"admin","password":"admin","email":"admin@slinger.local","display_name":"Bootstrap Admin","platform_role":"super_admin"}]}
+      SLINGER_BASE_URL: ${SLINGER_BASE_URL:-http://localhost}
+      SLINGER_ADMIN_DASHBOARD_URL: ${SLINGER_ADMIN_DASHBOARD_URL:-http://localhost}
+      SLINGER_SIGNING_SECRET: ${SLINGER_SIGNING_SECRET:-change-me-in-production}
     depends_on:
       - postgres
       - redis
-    ports:
-      - "8080:8080"
+    expose:
+      - "8080"
 
   worker:
-    build:
-      context: .
-      dockerfile: api/Dockerfile
+    image: ${SLINGER_API_IMAGE:-slinger-api:latest}
     command: ["/app/worker"]
     depends_on:
       - postgres
       - redis
 
   realtime:
-    build:
-      context: .
-      dockerfile: api/Dockerfile
+    image: ${SLINGER_API_IMAGE:-slinger-api:latest}
     command: ["/app/realtime"]
     depends_on:
       - redis
-    ports:
-      - "8081:8081"
 
   admin-dashboard:
-    build:
-      context: .
-      dockerfile: admin-dashboard/Dockerfile
+    image: ${SLINGER_ADMIN_DASHBOARD_IMAGE:-slinger-admin-dashboard:latest}
     environment:
-      VITE_API_BASE_URL: http://localhost:8080
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
     depends_on:
       - api
-    ports:
-      - "5174:4173"
+    expose:
+      - "4173"
 
   proxy:
     image: caddy:2-alpine
@@ -68,8 +58,8 @@ services:
       - api
       - admin-dashboard
     ports:
-      - "80:80"
-      - "443:443"
+      - "${SLINGER_HTTP_PORT:-80}:80"
+      - "${SLINGER_HTTPS_PORT:-443}:443"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
 

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../db.js";
 import { AppError } from "../lib/errors.js";
 import { defineRoute } from "../lib/route.js";
-import { pageArgs, paginationQuerySchema, toPage, withCursor } from "../lib/pagination.js";
+import { pageArgs, paginationQuerySchema, sortedPageArgs, toPage, toSortedPage, withCursor, withSortedCursor } from "../lib/pagination.js";
 import {
   collectionSchema, environmentSchema, folderSchema, ok, okSchema, paged, requestSchema, toCollection,
   toEnvironment, toFolder, toRequest, toVariable, variableSchema
@@ -86,17 +86,17 @@ export function registerContentRoutes(app: FastifyInstance): void {
 
   // ------------------------------------------------------------ folders
   defineRoute(app, {
-    method: "GET", url: "/v1/workspaces/:workspaceId/collections/:collectionId/folders", summary: "List a collection's folders",
+    method: "GET", url: "/v1/workspaces/:workspaceId/collections/:collectionId/folders", summary: "List a collection's folders (ordered by sort_order, then id)",
     access: READ, tags: ["Content"], auth: "user", pre: [read], params: collectionParams, query: paginationQuerySchema,
     responses: { 200: paged(folderSchema) }, errors: [400, 401, 403, 404],
     handler: async ({ params, query }) => {
       const col = await prisma.collection.findFirst({ where: { id: params.collectionId, workspaceId: params.workspaceId } });
       if (!col) throw new AppError("not_found", "collection not found");
-      const a = pageArgs(query);
+      const a = sortedPageArgs(query);
       const rows = await prisma.folder.findMany({
-        where: withCursor({ workspaceId: params.workspaceId, collectionId: col.id }, a), orderBy: a.orderBy, take: a.take
+        where: withSortedCursor({ workspaceId: params.workspaceId, collectionId: col.id }, a), orderBy: a.orderBy, take: a.take
       });
-      return toPage(rows, query.limit, toFolder);
+      return toSortedPage(rows, query.limit, toFolder);
     }
   });
   defineRoute(app, {
@@ -140,19 +140,19 @@ export function registerContentRoutes(app: FastifyInstance): void {
 
   // ------------------------------------------------------------ requests
   defineRoute(app, {
-    method: "GET", url: "/v1/workspaces/:workspaceId/collections/:collectionId/requests", summary: "List a collection's requests",
+    method: "GET", url: "/v1/workspaces/:workspaceId/collections/:collectionId/requests", summary: "List a collection's requests (ordered by sort_order, then id)",
     access: READ, tags: ["Content"], auth: "user", pre: [read], params: collectionParams,
     query: paginationQuerySchema.extend({ folder_id: id.optional() }),
     responses: { 200: paged(requestSchema) }, errors: [400, 401, 403, 404],
     handler: async ({ params, query }) => {
       const col = await prisma.collection.findFirst({ where: { id: params.collectionId, workspaceId: params.workspaceId } });
       if (!col) throw new AppError("not_found", "collection not found");
-      const a = pageArgs(query);
+      const a = sortedPageArgs(query);
       const rows = await prisma.request.findMany({
-        where: withCursor({ workspaceId: params.workspaceId, collectionId: col.id, ...(query.folder_id && { folderId: query.folder_id }) }, a),
+        where: withSortedCursor({ workspaceId: params.workspaceId, collectionId: col.id, ...(query.folder_id && { folderId: query.folder_id }) }, a),
         orderBy: a.orderBy, take: a.take
       });
-      return toPage(rows, query.limit, toRequest);
+      return toSortedPage(rows, query.limit, toRequest);
     }
   });
   defineRoute(app, {

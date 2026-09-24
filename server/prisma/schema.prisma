@@ -143,6 +143,7 @@ model Workspace {
   joinRequests   JoinRequest[]
   hosts          WorkspaceHost[]
   collections    Collection[]
+  collectionVersions CollectionVersion[]
   folders        Folder[]
   requests       Request[]
   environments   Environment[]
@@ -236,9 +237,32 @@ model Collection {
 
   folders  Folder[]
   requests Request[]
+  versions CollectionVersion[]
 
   @@index([workspaceId])
+  @@index([workspaceId, id])
   @@map("collections")
+}
+
+// Immutable snapshot of a collection (synced from the desktop's collection_versions). Never updated after
+// creation: `version` stays 1 and exists only so it fits the generic optimistic-concurrency/sync machinery.
+model CollectionVersion {
+  id           String     @id @default(uuid())
+  workspaceId  String
+  workspace    Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  collectionId String
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  semver       String
+  notes        String?
+  snapshotJson String
+  folderCount  Int        @default(0)
+  requestCount Int        @default(0)
+  createdAt    DateTime   @default(now())
+  version      Int        @default(1)
+
+  @@unique([collectionId, semver])
+  @@index([workspaceId])
+  @@map("collection_versions")
 }
 
 model Folder {
@@ -251,6 +275,7 @@ model Folder {
   parentFolder   Folder?    @relation("FolderParent", fields: [parentFolderId], references: [id], onDelete: Cascade)
   childFolders   Folder[]   @relation("FolderParent")
   name           String
+  sortOrder      Int        @default(0)
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
   version        Int        @default(1)
@@ -260,6 +285,7 @@ model Folder {
   @@index([workspaceId])
   @@index([collectionId])
   @@index([parentFolderId])
+  @@index([workspaceId, id])
   @@map("folders")
 }
 
@@ -275,6 +301,7 @@ model Request {
   method       String
   url          String
   documentJson String
+  sortOrder    Int        @default(0)
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
   version      Int        @default(1)
@@ -282,6 +309,7 @@ model Request {
   @@index([workspaceId])
   @@index([collectionId])
   @@index([folderId])
+  @@index([workspaceId, id])
   @@map("requests")
 }
 
@@ -297,6 +325,7 @@ model Environment {
   variables EnvironmentVariable[]
 
   @@index([workspaceId])
+  @@index([workspaceId, id])
   @@map("environments")
 }
 

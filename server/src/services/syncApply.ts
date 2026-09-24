@@ -6,7 +6,7 @@ import type { SyncResourceType } from "./syncLog.js";
 
 type Tx = Prisma.TransactionClient;
 
-export const resourceTypes = ["collection", "folder", "request", "environment", "environment_variable"] as const;
+export const resourceTypes = ["collection", "folder", "request", "environment", "environment_variable", "collection_version"] as const;
 
 export type IncomingOp = {
   operation_id: string;
@@ -21,10 +21,18 @@ export type IncomingOp = {
 const uuidish = z.string().min(1).max(64);
 const folderCreate = c.folderData.extend({ collection_id: uuidish });
 const requestCreate = c.requestData.extend({ collection_id: uuidish });
-const variableCreate = c.variableData.extend({ environment_id: uuidish, key: c.variableKey });
+const variableCreate = c.syncVariableData.extend({ environment_id: uuidish, key: c.variableKey });
+
+/** Structured reason attached to a rejection so clients can branch without parsing messages. */
+export type RejectionReason =
+  | "version_mismatch" | "not_found" | "invalid" | "too_large" | "forbidden" | "read_only" | "id_in_use" | "duplicate_key"
+  | "immutable" | "internal_error";
 
 const syncConflict = (msg: string, current?: number) =>
-  new AppError("sync_conflict", msg, current === undefined ? undefined : { current_version: current });
+  new AppError("sync_conflict", msg, { reason: "version_mismatch", ...(current === undefined ? {} : { current_version: current }) });
+
+/** Edit of a resource that was deleted on the server: legacy code `sync_conflict`, fine-grained reason `not_found`. */
+const gone = () => new AppError("sync_conflict", "resource no longer exists on the server (deleted); pull and retry", { reason: "not_found" });
 
 /** Optimistic-concurrency gate: existing rows must be edited from exactly the version the client last saw. */
 function checkBase(existing: { version: number } | null, op: IncomingOp) {
@@ -33,13 +41,13 @@ function checkBase(existing: { version: number } | null, op: IncomingOp) {
       throw syncConflict("base_version does not match the server version; pull and retry", existing.version);
     }
   } else if (op.op === "upsert" && op.base_version > 0) {
-    throw syncConflict("resource no longer exists on the server (deleted); pull and retry");
+    throw gone();
   }
 }
 
 /** A client-chosen id must not collide with a row in ANOTHER workspace (and must never reveal it). */
 function idTaken(): AppError {
-  return new AppError("conflict", "resource id is already in use");
+  return new AppError("conflict", "resource id is already in use", { reason: "id_in_use" });
 }
 
 /**
@@ -102,11 +110,8 @@ export async function applyOperation(
         return cur.version;
       }
       if (cur) {
-        const { collection_id, ...d } = requestCreate.partial().parse(op.payload);
-        if (collection_id !== undefined && collection_id !== cur.collectionId) {
-          throw new AppError("invalid_request", "a request cannot move between collections");
-        }
-        return (await c.updateRequest(tx, wsId, id, d, cur.version, ctx)).version;
+        // A request may move to another collection of THIS workspace (updateRequest checks the target and its folder).
+        return (await c.updateRequest(tx, wsId, id, requestCreate.partial().parse(op.payload), cur.version, ctx)).version;
       }
       if (await tx.request.findUnique({ where: { id } })) throw idTaken();
       const { collection_id, ...d } = requestCreate.parse(op.payload);
@@ -133,15 +138,38 @@ export async function applyOperation(
         return cur.version;
       }
       const d = variableCreate.parse(op.payload);
-      if (cur) {
-        if (d.key !== cur.key || d.environment_id !== cur.environmentId) {
-          throw new AppError("invalid_request", "a variable's key and environment cannot change");
-        }
-      } else if (await tx.environmentVariable.findUnique({ where: { id } })) {
-        throw idTaken();
-      }
-      const { row } = await c.putVariable(tx, wsId, d.environment_id, d.key, { value: d.value, is_secret: d.is_secret }, signingSecret, cur?.version, ctx, id);
-      return row.version;
+      if (!cur && (await tx.environmentVariable.findUnique({ where: { id } }))) throw idTaken();
+      return (await c.syncPutVariable(tx, wsId, id, cur, d, cur?.version, ctx)).version;
     }
+    case "collection_version": {
+      const cur = await tx.collectionVersion.findFirst({ where: { id, workspaceId: wsId } });
+      if (op.op === "delete") {
+        checkBase(cur, op);
+        if (!cur) throw new AppError("not_found", "collection version not found");
+        await c.deleteCollectionVersion(tx, wsId, id, undefined, ctx);
+        return cur.version;
+      }
+      const d = c.collectionVersionData.parse(op.payload);
+      if (cur) {
+        // Immutable: an identical re-send is an idempotent success, anything else is refused.
+        if (c.sameCollectionVersion(cur, d)) return cur.version;
+        throw new AppError("conflict", "collection versions are immutable", { reason: "immutable", current_version: cur.version });
+      }
+      if (op.base_version > 0) throw gone();
+      if (await tx.collectionVersion.findUnique({ where: { id } })) throw idTaken();
+      return (await c.createCollectionVersion(tx, wsId, id, d, ctx)).version;
+    }
+  }
+}
+
+/** Current wire payload of a resource in this workspace (for `version_mismatch` rejections), or null when gone. */
+export async function currentPayload(tx: Pick<Tx, "collection" | "folder" | "request" | "environment" | "environmentVariable" | "collectionVersion">, wsId: string, type: SyncResourceType, id: string) {
+  switch (type) {
+    case "collection": { const r = await tx.collection.findFirst({ where: { id, workspaceId: wsId } }); return r && c.syncPayload(type, r); }
+    case "folder": { const r = await tx.folder.findFirst({ where: { id, workspaceId: wsId } }); return r && c.syncPayload(type, r); }
+    case "request": { const r = await tx.request.findFirst({ where: { id, workspaceId: wsId } }); return r && c.syncPayload(type, r); }
+    case "environment": { const r = await tx.environment.findFirst({ where: { id, workspaceId: wsId } }); return r && c.syncPayload(type, r); }
+    case "environment_variable": { const r = await c.findVariableById(tx as Tx, wsId, id); return r && c.syncPayload(type, r); }
+    case "collection_version": { const r = await tx.collectionVersion.findFirst({ where: { id, workspaceId: wsId } }); return r && c.syncPayload(type, r); }
   }
 }

@@ -53,11 +53,11 @@ export const collectionSchema = z.object({
 });
 export const folderSchema = z.object({
   id, workspace_id: id, collection_id: id, parent_folder_id: id.nullable(), name: z.string(),
-  created_at: ts, updated_at: ts, version: z.number().int()
+  sort_order: z.number().int(), created_at: ts, updated_at: ts, version: z.number().int()
 });
 export const requestSchema = z.object({
   id, workspace_id: id, collection_id: id, folder_id: id.nullable(), name: z.string(), method: z.string(),
-  url: z.string(), document_json: z.string(), created_at: ts, updated_at: ts, version: z.number().int()
+  url: z.string(), document_json: z.string(), sort_order: z.number().int(), created_at: ts, updated_at: ts, version: z.number().int()
 });
 export const environmentSchema = z.object({
   id, workspace_id: id, name: z.string(), created_at: ts, updated_at: ts, version: z.number().int()
@@ -117,11 +117,11 @@ export const toCollection = (c: Collection) => ({
 });
 export const toFolder = (f: Folder) => ({
   id: f.id, workspace_id: f.workspaceId, collection_id: f.collectionId, parent_folder_id: f.parentFolderId,
-  name: f.name, created_at: iso(f.createdAt), updated_at: iso(f.updatedAt), version: f.version
+  name: f.name, sort_order: f.sortOrder, created_at: iso(f.createdAt), updated_at: iso(f.updatedAt), version: f.version
 });
 export const toRequest = (r: RequestRow) => ({
   id: r.id, workspace_id: r.workspaceId, collection_id: r.collectionId, folder_id: r.folderId, name: r.name,
-  method: r.method, url: r.url, document_json: r.documentJson, created_at: iso(r.createdAt),
+  method: r.method, url: r.url, document_json: r.documentJson, sort_order: r.sortOrder, created_at: iso(r.createdAt),
   updated_at: iso(r.updatedAt), version: r.version
 });
 export const toEnvironment = (e: Environment) => ({

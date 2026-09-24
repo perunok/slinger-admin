@@ -26,6 +26,10 @@ export type AppConfig = {
   /** Domain under which `dedicated_subdomain` hosts may be created (optional). */
   sharedDomain: string | null;
   bodyLimitBytes: number;
+  /** Body cap for `POST .../sync/push` only (large documents / collection version snapshots). */
+  syncBodyLimitBytes: number;
+  /** Max sync requests (register/push/pull/snapshot) per user per minute. */
+  syncRateLimitPerMinute: number;
   accessTokenTtlSeconds: number;
   refreshTokenTtlSeconds: number;
   browserSessionTtlSeconds: number;
@@ -68,6 +72,8 @@ const envSchema = z.object({
   SLINGER_BASE_URL: z.string().url().default("http://localhost:8080"),
   SLINGER_SHARED_DOMAIN: z.string().optional(),
   SLINGER_BODY_LIMIT_BYTES: intFromEnv(1024, 50_000_000).default(1_000_000),
+  SLINGER_SYNC_BODY_LIMIT_BYTES: intFromEnv(1024, 100_000_000).default(8 * 1024 * 1024),
+  SLINGER_SYNC_RATE_LIMIT_PER_MINUTE: intFromEnv(1, 100_000).default(120),
   SLINGER_ACCESS_TOKEN_TTL: intFromEnv(60, 86_400).default(3600),
   SLINGER_REFRESH_TOKEN_TTL: intFromEnv(300, 60 * 60 * 24 * 365).default(60 * 60 * 24 * 30),
   SLINGER_SESSION_TTL: intFromEnv(300, 60 * 60 * 24 * 90).default(60 * 60 * 24 * 7),
@@ -180,6 +186,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, logger: Logger 
     baseUrl: e.SLINGER_BASE_URL.replace(/\/+$/, ""),
     sharedDomain,
     bodyLimitBytes: e.SLINGER_BODY_LIMIT_BYTES,
+    syncBodyLimitBytes: e.SLINGER_SYNC_BODY_LIMIT_BYTES,
+    syncRateLimitPerMinute: e.SLINGER_SYNC_RATE_LIMIT_PER_MINUTE,
     accessTokenTtlSeconds: e.SLINGER_ACCESS_TOKEN_TTL,
     refreshTokenTtlSeconds: e.SLINGER_REFRESH_TOKEN_TTL,
     browserSessionTtlSeconds: e.SLINGER_SESSION_TTL,

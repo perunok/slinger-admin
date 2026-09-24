@@ -57,6 +57,8 @@ All variables are validated with zod at startup; **every** problem is reported i
 | `SLINGER_SHARED_DOMAIN` | unset | domain under which `dedicated_subdomain` hosts may be created (e.g. `sling.example.com`) |
 | `PORT` (or `SLINGER_PORT`) / `SLINGER_HOST` | `8080` / `0.0.0.0` | |
 | `SLINGER_BODY_LIMIT_BYTES` | `1000000` | request body cap; larger bodies get `413` |
+| `SLINGER_SYNC_BODY_LIMIT_BYTES` | `8388608` | body cap of `POST .../sync/push` only (large documents / collection version snapshots); `413` with `details.reason: too_large` above it |
+| `SLINGER_SYNC_RATE_LIMIT_PER_MINUTE` | `120` | per-user budget for all sync endpoints (register, push, pull, snapshot); `429 rate_limited` with a `Retry-After` header. Uses the same store as the login limiter (`SLINGER_RATE_LIMIT_STORE`). |
 | `SLINGER_ACCESS_TOKEN_TTL` | `3600` | seconds |
 | `SLINGER_REFRESH_TOKEN_TTL` | `2592000` | seconds |
 | `SLINGER_SESSION_TTL` | `604800` | dashboard session/cookie lifetime, seconds |
@@ -90,7 +92,7 @@ between runs. Every JSON response is additionally validated against its declared
 (`validateResponses`), which keeps `openapi.yaml` honest. Coverage includes: owner-vs-platform-admin boundaries, viewer blocked
 from every write incl. sync push, cross-workspace IDOR (404s), invite token/email binding, `version_mismatch`, CSRF (cookie vs
 Bearer), login rate limiting, CORS allowlist, request-id propagation, body cap, secret masking, cursor pagination on every
-list, audit-log writes, sync push/pull (incl. tombstones for cascaded folder deletes), admin routes (incl. a disabled user's sessions,
+list, audit-log writes, sync push/pull (incl. tombstones for cascaded folder/collection/environment deletes), sync v2 (`test/syncV2.test.ts`: sort_order, request moves, secret metadata, collection versions, snapshot with ~2k entities, limits, idempotent replays, two-client convergence, role matrix and cross-workspace IDOR), admin routes (incl. a disabled user's sessions,
 access tokens and refresh tokens being rejected, and the 503 health body), hosts + DNS verification, the Postgres-backed rate limit
 store shared by two app instances, bootstrap validation and production config failures.
 
@@ -138,7 +140,8 @@ and exits (forced exit after 10 s).
   `rate_limited` 429 (+ `Retry-After`), `internal_error` 500. Send `X-Request-Id` (<=128 chars `[A-Za-z0-9._:-]`) or one is generated;
   it is echoed in the `X-Request-Id` response header and `error.request_id`.
 - **Pagination:** every list: `?cursor=&limit=&order=` (limit default 20, max 100, `order=asc|desc`, ordered by `(created_at, id)`;
-  audit-log endpoints too, use `order=desc` for newest first). Response `{items: [...], page: {next_cursor, has_more}}`.
+  audit-log endpoints too, use `order=desc` for newest first; folder and request lists are ordered by `(sort_order, id)` with a
+  matching cursor). Response `{items: [...], page: {next_cursor, has_more}}`.
   Sync pull uses checkpoints instead (`after_checkpoint`, `has_more`).
 - **Optimistic concurrency:** `PATCH` bodies require `version` (the version you last read) -> `409 version_mismatch` if stale.
   `DELETE` accepts optional `?version=`; approve/reject/`PUT variable` accept optional `version`.
@@ -274,6 +277,7 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 |---|---|---|---|---|
 | `POST` | `/v1/sync/clients/register` | auth | 201 | Register a desktop client/device for sync |
 | `POST` | `/v1/workspaces/{workspaceId}/sync/push` | auth — workspace owner/admin/editor, or platform admin | 200 | Push queued operations. Each operation is accepted or rejected independently. |
+| `GET` | `/v1/workspaces/{workspaceId}/sync/snapshot` | auth — any active workspace member, or platform admin | 200 | Download the workspace's current state page by page (initial sync / link) |
 | `GET` | `/v1/workspaces/{workspaceId}/sync/pull` | auth — any active workspace member, or platform admin | 200 | Pull operations after a checkpoint (checkpoint-based paging: repeat while has_more) |
 
 #### Realtime
@@ -315,12 +319,13 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 - **Join request**: `{id, requester_user_id, requester_email, requester_display_name, message, status, requested_role, version, ...}`; create `{message?, requested_role?}` -> `{join_request}`; approve `{role?, version?}` -> `{membership}`; reject `{version?}`.
 - **Host**: `{host, kind: dedicated_subdomain|custom_domain}` -> `{host:{id,host,kind,status,tls_status,...}, verification:{dns_record_type:"TXT", dns_record_name, dns_record_value}|null}`;
   `POST .../hosts/{host_id}/verify` -> `{host, verified}`.
-- **Content**: collection `{name}`; folder `{name, parent_folder_id?}`; request `{name, method, url, document_json, folder_id?}`; environment `{name}`;
+- **Content**: collection `{name}`; folder `{name, parent_folder_id?, sort_order?}`; request `{name, method (any HTTP token), url, document_json, folder_id?, sort_order?}`; environment `{name}`;
   variable `PUT .../variables/{key}` `{value, is_secret?, version?}` -> `{variable:{id, environment_id, key, value, masked_value, is_secret, version,...}}`.
-- **Sync**: push `{client_id, base_checkpoint?, operations:[{operation_id, resource_type: collection|folder|request|environment|environment_variable, resource_id, op: upsert|delete, base_version, payload, occurred_at?}]}`
-  -> `{accepted:[{operation_id, resource_id, resulting_version}], rejected:[{operation_id, resource_id, code, message, current_version}], checkpoint}`;
-  pull `GET .../sync/pull?client_id=&after_checkpoint=&limit=` -> `{operations:[{..., checkpoint}], checkpoint, has_more}`.
-  Operations are idempotent by `operation_id`; existing resources need `base_version` == server version (else `sync_conflict`); new ones use
+- **Sync** (protocol v2, see the "Sync protocol v2" section): push `{client_id, base_checkpoint?, operations:[{operation_id, resource_type: collection|folder|request|environment|environment_variable|collection_version, resource_id, op: upsert|delete, base_version, payload, occurred_at?}]}`
+  -> `{accepted:[{operation_id, resource_id, resulting_version}], rejected:[{operation_id, resource_id, code, reason, message, current_version, current_payload, conflicting_resource_id}], checkpoint}`;
+  pull `GET .../sync/pull?client_id=&after_checkpoint=&limit=` -> `{operations:[{..., checkpoint}], checkpoint, has_more}`;
+  snapshot `GET .../sync/snapshot?client_id=&cursor=&limit=` -> `{checkpoint, entities:[{resource_type, resource_id, version, payload}], next_cursor}`.
+  Operations are idempotent by `operation_id`; existing resources need `base_version` == server version (else `sync_conflict`/`version_mismatch`); new ones use
   a client-generated `resource_id` and `base_version: 0`. REST edits from the dashboard also appear in pull.
 - **Realtime/collab**: `POST .../realtime/token {channels?}` -> `{token, expires_in, channels}`; `POST .../collab/rooms/token {room_key}` -> `{token, room_key, expires_in}`
   (JWTs with audience `slinger-realtime` / `slinger-collab`, claims `workspace_id, role, can_write, channels|room_key`; no realtime service is included).
@@ -328,6 +333,73 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
   (if `password` is omitted a temporary one is generated and shown once), `PATCH /v1/admin/users/{user_id} {display_name?, platform_role?, disabled?}`,
   `GET /v1/admin/workspaces?q=`, `GET|DELETE /v1/admin/workspaces/{workspace_id}`, `GET /v1/admin/audit-logs?action=&actor_user_id=&workspace_id=`,
   `GET /v1/admin/health` (`{status, services:{api, postgres}, timestamp}`, 503 if the DB is down), `GET /v1/admin/stats`.
+
+## Sync protocol v2
+
+Server side of `slinger/docs/SYNC_DESIGN.md` (section 14). Everything is additive: v1 clients keep working (they ignore `reason`,
+`current_payload`, `sort_order`, ...). Register (`POST /v1/sync/clients/register`) answers `protocol_version: 2` and
+`features: ["sort_order","snapshot","collection_version","secret_metadata","op_reasons","request_move"]`; a desktop that needs them
+must refuse to sync against a server that does not advertise `protocol_version >= 2`.
+
+**Wire payloads** (identical in pull, snapshot and `current_payload`):
+
+| resource_type | payload |
+|---|---|
+| `collection`, `environment` | `{name}` |
+| `folder` | `{collection_id, parent_folder_id, name, sort_order}` |
+| `request` | `{collection_id, folder_id, name, method, url, document_json, sort_order}` |
+| `environment_variable` | `{environment_id, key, value, is_secret}`; `value` is always `null` when `is_secret` |
+| `collection_version` | `{collection_id, semver, notes, snapshot_json, folder_count, request_count, created_at}` (immutable) |
+
+Upserts are partial for existing rows (omitted fields keep their value; `sort_order` defaults to 0 on create). Log entries written before
+v2 have no `sort_order` in their pull payload: treat a missing one as "unchanged / 0".
+
+**Push** (`POST /v1/workspaces/{id}/sync/push`, editor+, up to 500 operations, body up to `SLINGER_SYNC_BODY_LIMIT_BYTES` = 8 MiB):
+operations apply in array order, each in its own transaction, and are idempotent by `(workspace, operation_id)`: replaying an already
+applied operation returns its original `accepted` entry and changes nothing (also under concurrent replays). A viewer gets
+`403 workspace_access_denied` with `details: {reason: "read_only", role: "viewer"}` and nothing is written; non-members get the
+generic 403 without that hint. Every push with at least one operation writes one `sync.push` audit-log row (counts by type and by
+rejection reason, replay count, client id, resulting checkpoint; never payload content).
+
+Each rejection carries a legacy `code` (`sync_conflict|not_found|invalid_request|conflict|internal_error`) and a structured `reason`
+that v2 clients should branch on:
+
+| reason | legacy code | meaning | extra fields |
+|---|---|---|---|
+| `version_mismatch` | `sync_conflict` | `base_version` differs from the server's | `current_version`, `current_payload` (server state, secrets masked): merge and retry with `base_version = current_version` |
+| `not_found` | `not_found` (delete / missing parent / target collection) or `sync_conflict` (edit of a row deleted on the server) | resource or parent does not exist **in this workspace** (other workspaces' rows look identical) | none |
+| `invalid` | `invalid_request` | validation failed (secret carrying a value, folder outside the target collection, folder cycle, non-token method, malformed JSON...) | message lists the issues |
+| `too_large` | `invalid_request` | an item exceeds a cap: `document_json` 900000 bytes, names 200 chars (request names 500), url 8192, variable key 128, `snapshot_json` 8000000 bytes | message names the field |
+| `id_in_use` | `conflict` | the client-chosen id exists in another workspace (or as another type) | none |
+| `duplicate_key` | `conflict` | variable `(environment, key)` or version `(collection, semver)` already used by a different id | `conflicting_resource_id` |
+| `immutable` | `conflict` | `collection_version` update with different content | `current_version`, `current_payload` |
+| `forbidden` / `read_only` / `internal_error` | | reserved; viewer pushes are refused for the whole request (403), not per operation | |
+
+**Requests move between collections** of the same workspace by upserting `collection_id` (the target must exist in the workspace; the
+resulting `folder_id` must belong to the target collection, so send `folder_id: null` or a folder of the target). Folders can never
+change collection. REST `PATCH /requests/{id}` still cannot move.
+
+**Secret variables** sync as metadata only. A payload with `is_secret: true` must have `value: null` (otherwise `invalid`); a secret value
+previously set from the dashboard is kept on updates; plaintext -> secret wipes the stored plaintext; secret -> plaintext takes the payload
+value (`null` becomes `""`). The `key` can be renamed by resource id (clash -> `duplicate_key`); `environment_id` is immutable.
+
+**`collection_version`** is insert-only: creating a new id is `accepted` (version 1); re-sending identical content is an idempotent success;
+different content is `immutable`; the same `(collection, semver)` under another id is `duplicate_key`; `delete` is allowed (`base_version` 1).
+
+**Pull** (`GET .../sync/pull`): `seq`/checkpoint values are strictly increasing and gap-free per workspace (allocated under the workspace
+row lock in the same transaction as the change), `has_more` pages by `limit` (<= 500) and roughly 8 MiB of payload. Every delete has its own
+tombstone entry, including cascades: folder deletes (descendant folders and requests), collection deletes (folders, requests, versions),
+environment deletes (variables), in one transaction, children first and the deleted parent last. Deleting a workspace removes its log; members
+then get 403 from every sync endpoint (clients treat that as "access revoked").
+
+**Snapshot** (`GET .../sync/snapshot?client_id&cursor&limit=1..500`, viewer+): current entities, `collection`, `environment`, `folder`, `request`,
+`environment_variable`, `collection_version` (each by `id`), as `{resource_type, resource_id, version, payload}` with an opaque `next_cursor`
+(`null` on the last page, never an empty trailing page). `checkpoint` is read before the first page and repeated on every page. Rows can be
+newer than `checkpoint` (writes during the download); after the last page the client sets its checkpoint to it and pulls, applying only
+operations whose `resulting_version` is newer than what it holds. No tombstones.
+
+**Limits**: `SLINGER_SYNC_RATE_LIMIT_PER_MINUTE` (default 120 requests/user/minute over register, push, pull, snapshot) answers
+`429 rate_limited` + `Retry-After`. Other routes keep the 1 MB body cap.
 
 ## Deviations from the design brief / contract (deliberate)
 

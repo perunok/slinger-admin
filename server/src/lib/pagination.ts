@@ -77,3 +77,47 @@ export function toPage<T extends { createdAt: Date; id: string }, O>(
     page: { next_cursor: hasMore && last ? encodeCursor(last.createdAt, last.id) : null, has_more: hasMore }
   };
 }
+
+// ---------------------------------------------------------------- (sort_order, id) paging for folders and requests
+// Lists of tree nodes follow the order the desktop shows (`sort_order`, ties by `id`), see docs/SYNC_DESIGN.md D9.
+// The cursor is base64url("<sort_order>#<id>"): different from the created_at cursor, so the two can't be mixed up.
+
+export function encodeSortCursor(sortOrder: number, id: string): string {
+  return Buffer.from(`${sortOrder}#${id}`, "utf8").toString("base64url");
+}
+
+export function decodeSortCursor(cursor: string): { sortOrder: number; id: string } | null {
+  const m = /^(\d{1,10})#(.{1,64})$/s.exec(Buffer.from(cursor, "base64url").toString("utf8"));
+  return m ? { sortOrder: Number(m[1]), id: m[2]! } : null;
+}
+
+export type SortedPageArgs = {
+  take: number;
+  orderBy: [{ sortOrder: "asc" | "desc" }, { id: "asc" | "desc" }];
+  cursorWhere: { OR: Array<Record<string, unknown>> } | undefined;
+};
+
+export function sortedPageArgs(q: PaginationQuery): SortedPageArgs {
+  let cursorWhere: SortedPageArgs["cursorWhere"];
+  if (q.cursor) {
+    const c = decodeSortCursor(q.cursor);
+    if (!c) throw new AppError("invalid_request", "invalid cursor", { field: "cursor" });
+    const cmp = q.order === "asc" ? "gt" : "lt";
+    cursorWhere = { OR: [{ sortOrder: { [cmp]: c.sortOrder } }, { sortOrder: c.sortOrder, id: { [cmp]: c.id } }] };
+  }
+  return { take: q.limit + 1, orderBy: [{ sortOrder: q.order }, { id: q.order }], cursorWhere };
+}
+
+export function withSortedCursor<W extends object>(base: W, args: SortedPageArgs): W & { AND?: any[] } {
+  return args.cursorWhere ? { ...base, AND: [args.cursorWhere] } : base;
+}
+
+export function toSortedPage<T extends { sortOrder: number; id: string }, O>(rows: T[], limit: number, map: (row: T) => O): Page<O> {
+  const hasMore = rows.length > limit;
+  const slice = hasMore ? rows.slice(0, limit) : rows;
+  const last = slice[slice.length - 1];
+  return {
+    items: slice.map(map),
+    page: { next_cursor: hasMore && last ? encodeSortCursor(last.sortOrder, last.id) : null, has_more: hasMore }
+  };
+}

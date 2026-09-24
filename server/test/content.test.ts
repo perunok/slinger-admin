@@ -62,7 +62,8 @@ describe("collections / folders / requests CRUD", () => {
   it("validates input: bad method, invalid document_json, empty name, unknown fields on PATCH, missing version", async () => {
     const col = await makeCollection(app, owner, ws.id);
     const url = `${base}/collections/${col.id}/requests`;
-    expect((await call(app, { method: "POST", url, as: owner, body: { name: "x", url: "u", method: "YEET" } })).statusCode).toBe(400);
+    expect((await call(app, { method: "POST", url, as: owner, body: { name: "x", url: "u", method: "bad method" } })).statusCode).toBe(400); // not an HTTP token (any token like PROPFIND is valid since sync v2)
+    expect((await call(app, { method: "POST", url, as: owner, body: { name: "x", url: "u", method: "PROPFIND" } })).statusCode).toBe(201);
     expect((await call(app, { method: "POST", url, as: owner, body: { name: "x", url: "u", document_json: "{not json" } })).statusCode).toBe(400);
     expect((await call(app, { method: "POST", url, as: owner, body: { name: "  ", url: "u" } })).statusCode).toBe(400);
     const bad = await call(app, { method: "PATCH", url: `${base}/collections/${col.id}`, as: owner, body: { name: "x" } });

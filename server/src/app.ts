@@ -124,7 +124,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     } else if (e.code === "FST_ERR_CTP_BODY_TOO_LARGE") {
       status = 413;
       code = "invalid_request";
-      message = `request body exceeds ${cfg.bodyLimitBytes} bytes`;
+      const limit = req.routeOptions?.bodyLimit ?? cfg.bodyLimitBytes;
+      message = `request body exceeds ${limit} bytes`;
+      details = { reason: "too_large", limit_bytes: limit };
     } else if (e.code === "P2002") {
       status = 409;
       code = "conflict";

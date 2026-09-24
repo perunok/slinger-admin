@@ -127,7 +127,7 @@ describe("sync", () => {
     expect((await call(app, { method: "POST", url: `${base}/push`, as: owner, body: { client_id: client, operations: [{ operation_id: "x", resource_type: "user", resource_id: "r", op: "upsert" }] } })).statusCode).toBe(400);
   });
 
-  it("REST edits appear in pull; secret values never do; push of secrets is stored but masked", async () => {
+  it("REST edits appear in pull; secret values never do; secret metadata syncs, secret values are refused", async () => {
     const { owner, ws, client, base } = await setup();
     const url = `/v1/workspaces/${ws.id}`;
     const env = j(await call(app, { method: "POST", url: `${url}/environments`, as: owner, body: { name: "Prod" } })).environment;
@@ -135,9 +135,13 @@ describe("sync", () => {
     await call(app, { method: "PUT", url: `${url}/environments/${env.id}/variables/HOST`, as: owner, body: { value: "h.test" } });
     const varId = newId();
     const push = j(await call(app, { method: "POST", url: `${base}/push`, as: owner, body: { client_id: client, operations: [
-      op({ operation_id: "sv", resource_type: "environment_variable", resource_id: varId, op: "upsert", payload: { environment_id: env.id, key: "PUSHED", value: "PUSH-SECRET", is_secret: true } })
+      op({ operation_id: "sv", resource_type: "environment_variable", resource_id: varId, op: "upsert", payload: { environment_id: env.id, key: "PUSHED", value: null, is_secret: true } }),
+      // sync v2: a secret carrying a value is refused outright (it must never reach the server)
+      op({ operation_id: "sv2", resource_type: "environment_variable", resource_id: newId(), op: "upsert", payload: { environment_id: env.id, key: "LEAK", value: "PUSH-SECRET", is_secret: true } })
     ] } }));
     expect(push.accepted).toHaveLength(1);
+    expect(push.rejected).toHaveLength(1);
+    expect(push.rejected[0]).toMatchObject({ operation_id: "sv2", code: "invalid_request", reason: "invalid" });
     const pull = await call(app, { method: "GET", url: `${base}/pull?client_id=${client}`, as: owner });
     expect(pull.body).not.toContain("REST-SECRET");
     expect(pull.body).not.toContain("PUSH-SECRET");

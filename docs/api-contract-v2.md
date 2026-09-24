@@ -97,3 +97,25 @@ Every mutable resource has `version INT` and update endpoints must accept the cl
 - CSRF: a cookie-authenticated mutating request without `X-CSRF-Token` is rejected; a Bearer-token request without it succeeds.
 - Rate limiting kicks in after repeated failed logins.
 - CORS rejects a non-allowlisted Origin.
+
+## Sync v2 (deltas to the sync endpoints above)
+
+Authoritative design: `slinger/docs/SYNC_DESIGN.md` section 14. Server details and the full reason table: `server/README.md`
+("Sync protocol v2"). All changes are additive; v1 clients keep working.
+
+- **Capability advertisement**: `POST /v1/sync/clients/register` -> `201 {client, protocol_version: 2, features: [...]}`.
+- **New resource type** `collection_version` (immutable): payload `{collection_id, semver, notes, snapshot_json, folder_count, request_count, created_at}`.
+  Prisma model `CollectionVersion` (unique `(collectionId, semver)`); deleting a collection logs a tombstone per version.
+- **`sort_order`** (int 0..2e9, default 0) on folders and requests: REST create/patch bodies and responses, sync payloads. REST lists of
+  folders and requests are ordered by `(sort_order, id)`; their `cursor` is `base64url("<sort_order>#<id>")` (all other lists keep `(created_at, id)`).
+- **Request move**: sync upsert of an existing request may change `collection_id` within the workspace (target must exist there, `folder_id`
+  must belong to the target collection). REST PATCH does not accept `collection_id`.
+- **Secret variables in sync**: metadata only, `{key, value: null, is_secret: true}`; a secret with a value is `invalid`; key rename by id.
+- **Validation parity**: request `name` max 500 (other names 200), `method` any HTTP token (<= 32), `document_json` <= 900000 **bytes**,
+  `snapshot_json` <= 8000000 bytes. This also applies to REST (any method token is now valid there; previously a fixed verb list).
+- **Push result shape** gains `reason`, `current_payload`, `conflicting_resource_id` on every rejected entry (see README table);
+  `code` values are unchanged. Push body limit is 8 MiB (`SLINGER_SYNC_BODY_LIMIT_BYTES`); over it -> `413` with `details.reason = "too_large"`.
+- **Viewer push**: `403 workspace_access_denied` with `details.reason = "read_only"`; each push writes one `sync.push` audit row (summary only).
+- **New endpoint** `GET /v1/workspaces/{workspaceId}/sync/snapshot?client_id&cursor&limit` (viewer+): `{checkpoint, entities:[{resource_type, resource_id, version, payload}], next_cursor}`.
+- **Rate limit**: sync endpoints are limited per user (default 120/min) -> `429` + `Retry-After`.
+- **Pull**: unchanged shape; pages are additionally capped at ~8 MiB of payload (`has_more` set), and log entries written before v2 lack `sort_order`.

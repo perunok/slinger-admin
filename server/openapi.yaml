@@ -3887,7 +3887,7 @@ paths:
   /v1/workspaces/{workspaceId}/collections/{collectionId}/folders:
     get:
       operationId: getV1WorkspacesWorkspaceIdCollectionsCollectionIdFolders
-      summary: List a collection's folders
+      summary: List a collection's folders (ordered by sort_order, then id)
       tags:
         - Content
       security:
@@ -3918,6 +3918,8 @@ paths:
                           nullable: true
                         name:
                           type: string
+                        sort_order:
+                          type: integer
                         created_at:
                           type: string
                           format: date-time
@@ -3932,6 +3934,7 @@ paths:
                         - collection_id
                         - parent_folder_id
                         - name
+                        - sort_order
                         - created_at
                         - updated_at
                         - version
@@ -4048,6 +4051,8 @@ paths:
                         nullable: true
                       name:
                         type: string
+                      sort_order:
+                        type: integer
                       created_at:
                         type: string
                         format: date-time
@@ -4062,6 +4067,7 @@ paths:
                       - collection_id
                       - parent_folder_id
                       - name
+                      - sort_order
                       - created_at
                       - updated_at
                       - version
@@ -4125,6 +4131,10 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 200
+                sort_order:
+                  type: integer
+                  minimum: 0
+                  maximum: 2000000000
               required:
                 - name
               additionalProperties: false
@@ -4161,6 +4171,8 @@ paths:
                         nullable: true
                       name:
                         type: string
+                      sort_order:
+                        type: integer
                       created_at:
                         type: string
                         format: date-time
@@ -4175,6 +4187,7 @@ paths:
                       - collection_id
                       - parent_folder_id
                       - name
+                      - sort_order
                       - created_at
                       - updated_at
                       - version
@@ -4248,6 +4261,8 @@ paths:
                         nullable: true
                       name:
                         type: string
+                      sort_order:
+                        type: integer
                       created_at:
                         type: string
                         format: date-time
@@ -4262,6 +4277,7 @@ paths:
                       - collection_id
                       - parent_folder_id
                       - name
+                      - sort_order
                       - created_at
                       - updated_at
                       - version
@@ -4331,6 +4347,10 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 200
+                sort_order:
+                  type: integer
+                  minimum: 0
+                  maximum: 2000000000
                 version:
                   type: integer
                   minimum: 1
@@ -4412,7 +4432,7 @@ paths:
   /v1/workspaces/{workspaceId}/collections/{collectionId}/requests:
     get:
       operationId: getV1WorkspacesWorkspaceIdCollectionsCollectionIdRequests
-      summary: List a collection's requests
+      summary: List a collection's requests (ordered by sort_order, then id)
       tags:
         - Content
       security:
@@ -4449,6 +4469,8 @@ paths:
                           type: string
                         document_json:
                           type: string
+                        sort_order:
+                          type: integer
                         created_at:
                           type: string
                           format: date-time
@@ -4466,6 +4488,7 @@ paths:
                         - method
                         - url
                         - document_json
+                        - sort_order
                         - created_at
                         - updated_at
                         - version
@@ -4595,6 +4618,8 @@ paths:
                         type: string
                       document_json:
                         type: string
+                      sort_order:
+                        type: integer
                       created_at:
                         type: string
                         format: date-time
@@ -4612,6 +4637,7 @@ paths:
                       - method
                       - url
                       - document_json
+                      - sort_order
                       - created_at
                       - updated_at
                       - version
@@ -4674,25 +4700,23 @@ paths:
                 name:
                   type: string
                   minLength: 1
-                  maxLength: 200
+                  maxLength: 500
                 method:
                   type: string
-                  enum:
-                    - GET
-                    - POST
-                    - PUT
-                    - PATCH
-                    - DELETE
-                    - HEAD
-                    - OPTIONS
+                  minLength: 1
+                  maxLength: 32
+                  pattern: ^[!#$%&'*+.^_`|~0-9A-Za-z-]+$
                   default: GET
                 url:
                   type: string
                   maxLength: 8192
                 document_json:
                   type: string
-                  maxLength: 900000
                   default: "{}"
+                sort_order:
+                  type: integer
+                  minimum: 0
+                  maximum: 2000000000
               required:
                 - name
                 - url
@@ -4736,6 +4760,8 @@ paths:
                         type: string
                       document_json:
                         type: string
+                      sort_order:
+                        type: integer
                       created_at:
                         type: string
                         format: date-time
@@ -4753,6 +4779,7 @@ paths:
                       - method
                       - url
                       - document_json
+                      - sort_order
                       - created_at
                       - updated_at
                       - version
@@ -4832,6 +4859,8 @@ paths:
                         type: string
                       document_json:
                         type: string
+                      sort_order:
+                        type: integer
                       created_at:
                         type: string
                         format: date-time
@@ -4849,6 +4878,7 @@ paths:
                       - method
                       - url
                       - document_json
+                      - sort_order
                       - created_at
                       - updated_at
                       - version
@@ -4917,25 +4947,23 @@ paths:
                 name:
                   type: string
                   minLength: 1
-                  maxLength: 200
+                  maxLength: 500
                 method:
                   type: string
-                  enum:
-                    - GET
-                    - POST
-                    - PUT
-                    - PATCH
-                    - DELETE
-                    - HEAD
-                    - OPTIONS
+                  minLength: 1
+                  maxLength: 32
+                  pattern: ^[!#$%&'*+.^_`|~0-9A-Za-z-]+$
                   default: GET
                 url:
                   type: string
                   maxLength: 8192
                 document_json:
                   type: string
-                  maxLength: 900000
                   default: "{}"
+                sort_order:
+                  type: integer
+                  minimum: 0
+                  maximum: 2000000000
                 version:
                   type: integer
                   minimum: 1
@@ -5913,8 +5941,16 @@ paths:
                       - client_id
                       - registered_at
                     additionalProperties: false
+                  protocol_version:
+                    type: integer
+                  features:
+                    type: array
+                    items:
+                      type: string
                 required:
                   - client
+                  - protocol_version
+                  - features
                 additionalProperties: false
         "400":
           description: Invalid request (zod validation failed, malformed JSON, bad cursor)
@@ -5928,6 +5964,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      description: Returns the sync `protocol_version` and `features` the server supports. Desktop builds that need sort_order, snapshot, collection versions and secret metadata require `protocol_version >= 2`.
       requestBody:
         required: true
         content:
@@ -5999,17 +6042,40 @@ paths:
                             - invalid_request
                             - conflict
                             - internal_error
+                        reason:
+                          type: string
+                          enum:
+                            - version_mismatch
+                            - not_found
+                            - invalid
+                            - too_large
+                            - forbidden
+                            - read_only
+                            - id_in_use
+                            - duplicate_key
+                            - immutable
+                            - internal_error
                         message:
                           type: string
                         current_version:
                           type: integer
                           nullable: true
+                        current_payload:
+                          type: object
+                          additionalProperties: {}
+                          nullable: true
+                        conflicting_resource_id:
+                          type: string
+                          nullable: true
                       required:
                         - operation_id
                         - resource_id
                         - code
+                        - reason
                         - message
                         - current_version
+                        - current_payload
+                        - conflicting_resource_id
                       additionalProperties: false
                   checkpoint:
                     type: integer
@@ -6042,8 +6108,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: Body too large
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
       description: |-
-        Requires write access (editor or above): viewers get 403. Operations are idempotent by `operation_id`. Existing resources need `base_version` equal to the server version, else the op is rejected with `sync_conflict` and `current_version`. New resources use a client-generated `resource_id` and `base_version` 0. `base_checkpoint` is informational. Secret variable values are stored but never appear in pull payloads.
+        Requires write access (editor or above): viewers get 403 `forbidden` with `details.reason = read_only`. Operations are applied in array order, each in its own transaction, and are idempotent by `operation_id` (a replay returns the original result). Existing resources need `base_version` equal to the server version, else the op is rejected with `reason: version_mismatch` (legacy `code: sync_conflict`) carrying `current_version` and `current_payload` so the client can merge. New resources use a client-generated `resource_id` and `base_version` 0. Other reasons: `not_found`, `invalid`, `too_large` (per-item caps: document_json 900000 bytes, names 200 chars (request names 500), snapshot_json 8000000 bytes), `id_in_use`, `duplicate_key`, `immutable` (collection_version updates). Secret variables are metadata only: `{key, value: null, is_secret: true}`; a secret with a value is `invalid`. The body limit for this route is larger than elsewhere (default 8 MiB, `SLINGER_SYNC_BODY_LIMIT_BYTES`); `base_checkpoint` is informational. Each push writes one audit summary entry (`sync.push`), not one per operation.
 
         **Access:** workspace owner/admin/editor, or platform admin.
       parameters:
@@ -6090,6 +6168,7 @@ paths:
                           - request
                           - environment
                           - environment_variable
+                          - collection_version
                       resource_id:
                         type: string
                         minLength: 1
@@ -6157,6 +6236,7 @@ paths:
                             - request
                             - environment
                             - environment_variable
+                            - collection_version
                         resource_id:
                           type: string
                         op:
@@ -6218,8 +6298,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
       description: |-
-        Returns changes from every writer (desktop sync and dashboard/REST edits). Secret variable values are masked (`value: null`). Use the returned `checkpoint` as the next `after_checkpoint`.
+        Returns changes from every writer (desktop sync and dashboard/REST edits), ordered by strictly increasing checkpoint (`seq`). Secret variable values are masked (`value: null`). Use the returned `checkpoint` as the next `after_checkpoint`; a page holds at most `limit` operations and roughly 8 MiB of payload (`has_more` tells whether to continue). Every delete, including cascaded ones (folder/collection/environment deletes), has its own tombstone entry.
 
         **Access:** any active workspace member, or platform admin.
       parameters:
@@ -6244,6 +6330,126 @@ paths:
             type: integer
             minimum: 0
             default: 0
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 200
+      x-access: any active workspace member, or platform admin
+  /v1/workspaces/{workspaceId}/sync/snapshot:
+    get:
+      operationId: getV1WorkspacesWorkspaceIdSyncSnapshot
+      summary: Download the workspace's current state page by page (initial sync / link)
+      tags:
+        - Sync
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+          csrfToken: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checkpoint:
+                    type: integer
+                  entities:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        resource_type:
+                          type: string
+                          enum:
+                            - collection
+                            - folder
+                            - request
+                            - environment
+                            - environment_variable
+                            - collection_version
+                        resource_id:
+                          type: string
+                        version:
+                          type: integer
+                        payload:
+                          type: object
+                          additionalProperties: {}
+                      required:
+                        - resource_type
+                        - resource_id
+                        - version
+                        - payload
+                      additionalProperties: false
+                  next_cursor:
+                    type: string
+                    nullable: true
+                required:
+                  - checkpoint
+                  - entities
+                  - next_cursor
+                additionalProperties: false
+        "400":
+          description: Invalid request (zod validation failed, malformed JSON, bad cursor)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      description: |-
+        Entities are returned in the order collection, environment, folder, request, environment_variable, collection_version (each by id) so parents precede children. `checkpoint` is read before the first page and repeated on every page through the opaque `cursor`; after the last page (`next_cursor: null`) the client sets its checkpoint to it and pulls: rows may be newer than `checkpoint` and the log replay is idempotent by version comparison. Secret values are masked (`value: null`). No tombstones. A page holds at most `limit` entities and roughly 8 MiB of payload.
+
+        **Access:** any active workspace member, or platform admin.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+        - name: client_id
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 512
         - name: limit
           in: query
           required: false

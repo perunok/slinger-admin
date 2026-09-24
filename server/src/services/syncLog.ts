@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { newId } from "../lib/ids.js";
 
-export type SyncResourceType = "collection" | "folder" | "request" | "environment" | "environment_variable";
+export type SyncResourceType = "collection" | "folder" | "request" | "environment" | "environment_variable" | "collection_version";
 
 /**
  * Appends a change to the workspace's sync log and advances the workspace checkpoint. Must be called inside

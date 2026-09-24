@@ -18,6 +18,7 @@
   import TextField from '../../lib/components/TextField.svelte';
   import SelectField from '../../lib/components/SelectField.svelte';
   import CopyButton from '../../lib/components/CopyButton.svelte';
+  import ConfirmDialog from '../../lib/components/ConfirmDialog.svelte';
 
   let { id, role }: { id: string; role: WorkspaceRole | null } = $props();
   const canManage = $derived(canManageHosts(session.platformRole, role));
@@ -80,6 +81,22 @@
       checking[h.id] = false;
     }
   }
+
+  // ---- remove ----
+  let removing = $state<Host | null>(null);
+  const removeAction = new Action();
+  async function remove() {
+    const target = removing;
+    if (!target) return;
+    const res = await removeAction.run(() => api.workspaces.removeHost(id, target.id), {
+      success: `Removed ${target.host}`,
+      toastError: false,
+    });
+    if (res?.ok) {
+      pager.remove((x) => x.id === target.id);
+      removing = null;
+    }
+  }
 </script>
 
 <div class="row between head">
@@ -108,10 +125,21 @@
               <td><Badge tone={statusTone(h.status)} text={humanize(h.status)} /></td>
               <td>{#if h.tls_status}<Badge tone={statusTone(h.tls_status)} text={humanize(h.tls_status)} />{:else}—{/if}</td>
               <td class="actions">
-                {#if needsVerification(h) && canManage}
-                  <Button size="sm" busy={checking[h.id]} aria-label="Re-check DNS for {h.host}" onclick={() => recheck(h)}>
-                    Re-check DNS
-                  </Button>
+                {#if canManage}
+                  {#if needsVerification(h)}
+                    <Button size="sm" busy={checking[h.id]} aria-label="Re-check DNS for {h.host}" onclick={() => recheck(h)}>
+                      Re-check DNS
+                    </Button>
+                  {/if}
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    aria-label="Remove host {h.host}"
+                    onclick={() => {
+                      removeAction.error = null;
+                      removing = h;
+                    }}>Remove</Button
+                  >
                 {/if}
               </td>
             </tr>
@@ -147,6 +175,23 @@
     <LoadMore {pager} />
   </ListState>
 </div>
+
+{#if removing}
+  <ConfirmDialog
+    title="Remove host"
+    confirmLabel="Remove host"
+    danger
+    busy={removeAction.pending}
+    error={removeAction.error}
+    onconfirm={remove}
+    oncancel={() => (removing = null)}
+  >
+    <p>
+      <strong class="mono">{removing.host}</strong> will stop resolving to this workspace.
+      {#if removing.kind === 'custom_domain'}You can add it again later, but it has to be verified again.{/if}
+    </p>
+  </ConfirmDialog>
+{/if}
 
 {#if adding}
   <Modal title="Add host" onclose={() => (adding = false)} locked={addAction.pending}>

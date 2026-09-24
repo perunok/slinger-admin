@@ -2,7 +2,8 @@
   import Button from './Button.svelte';
   import { toasts } from '../state/toasts.svelte';
 
-  let { value, label = 'Copy' }: { value: string; label?: string } = $props();
+  /** `secret`: keep the value out of the accessible name (screen readers would announce it). */
+  let { value, label = 'Copy', secret = false }: { value: string; label?: string; secret?: boolean } = $props();
   let copied = $state(false);
 
   async function copy() {
@@ -17,4 +18,4 @@
   }
 </script>
 
-<Button size="sm" onclick={copy} aria-label="{label} {value}">{copied ? 'Copied' : label}</Button>
+<Button size="sm" onclick={copy} aria-label={secret ? label : `${label} ${value}`}>{copied ? 'Copied' : label}</Button>

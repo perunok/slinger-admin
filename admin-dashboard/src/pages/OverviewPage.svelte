@@ -33,6 +33,11 @@
     void loadRecent();
   }
   onMount(refresh);
+
+  /** Services that are not "ok" (the server answers 503 with `postgres: down` when the database is unreachable). */
+  const failing = $derived(
+    health.state === 'ready' ? Object.entries(health.value.services).filter(([, st]) => st !== 'ok') : [],
+  );
 </script>
 
 <div class="page-head">
@@ -68,6 +73,11 @@
         <Button size="sm" onclick={loadHealth}>Retry</Button>
       {:else}
         <div class="value"><Badge tone={statusTone(health.value.status)} text={humanize(health.value.status)} /></div>
+        {#if failing.length}
+          <div class="field-error" role="alert">
+            {failing.map(([name, st]) => `${name}: ${humanize(st).toLowerCase()}`).join(', ')}
+          </div>
+        {/if}
         <div class="muted small">Checked {formatDate(health.value.timestamp)}</div>
       {/if}
     </div>

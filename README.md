@@ -103,11 +103,13 @@ The ones you will touch most:
 | `SLINGER_TRUST_PROXY` | server | Set to `true` only behind a trusted proxy (compose does) |
 | `SLINGER_SHARED_DOMAIN` | server | Domain for `dedicated_subdomain` hosts |
 | `SLINGER_LOGIN_RATE_MAX`, `SLINGER_LOGIN_RATE_WINDOW_SECONDS` | server | Login rate limit per IP + email |
+| `SLINGER_RATE_LIMIT_STORE` | server | `memory` (default, per process) or `postgres` (shared across instances) |
 | `POSTGRES_PASSWORD`, `POSTGRES_USER`, `POSTGRES_DB` | compose | Bundled PostgreSQL |
 | `SLINGER_CADDYFILE`, `SLINGER_DOMAIN`, `SLINGER_HTTP_PORT`, `SLINGER_HTTPS_PORT` | compose | Proxy config / published ports |
 | `VITE_API_BASE_URL` | dashboard | API prefix in front of `/v1` (`/api` with the bundled proxy). Container: runtime, via `runtime-config.js` |
 | `SLINGER_API_PROXY` | dashboard dev | Target of the dev-server `/api` proxy (default `http://localhost:8080`) |
 | `E2E_DATABASE_URL` | e2e | Use this PostgreSQL instead of a throwaway container |
+| `E2E_SERVER_LOG_LEVEL`, `E2E_STREAM_LOGS` | e2e | Debugging: pino level of the e2e server and `1` to stream its log to the console |
 
 `.env.example` documents the compose variables.
 
@@ -140,8 +142,8 @@ npm run e2e       # starts everything, runs the suite, cleans up
 dashboard instances (same-origin proxy and cross-origin CORS), runs the Playwright suite in
 [`e2e/tests/`](e2e/tests/admin.spec.ts) and removes the container afterwards, even on failure or Ctrl+C. Extra arguments go to
 Playwright (`npm run e2e -- --headed`, `npm run e2e -- -g "invites"`). The suite covers login and wrong password, user creation
-and platform-role change, workspace create/delete (typed confirmation), members and role change, one-time invite tokens and
-acceptance through the API, join-request approve/reject, hosts and their TXT verification record, platform and workspace audit
+and platform-role change, generated temporary passwords (shown once), disabling/enabling users (existing sessions die), workspace create/settings (version conflict)/delete (typed confirmation), members and role change, one-time invite tokens and
+acceptance through the API, join-request approve/reject, hosts, their TXT verification record and removal, the degraded health breakdown, platform and workspace audit
 logs, CSRF refusal, session expiry with return to the same page, logout, role-based UI, and CORS across origins.
 
 ## Repository layout
@@ -159,4 +161,4 @@ docker-compose.yml, .env.example, deploy-manual.md
 
 OAuth2/LDAP/SAML, a realtime/collaboration service (the API only issues signed tokens), the extension/marketplace platform,
 GraphQL/gRPC, e-mail delivery (invite tokens are returned by the API and shown once in the dashboard), Redis. See
-[`server/README.md`](server/README.md#known-limitations--not-built) for known limitations (for example the in-process login rate limiter).
+[`server/README.md`](server/README.md#known-limitations--not-built) for known limitations (for example the login rate limiter is per-process unless `SLINGER_RATE_LIMIT_STORE=postgres`).

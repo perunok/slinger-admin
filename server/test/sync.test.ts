@@ -153,6 +153,67 @@ describe("sync", () => {
     expect(after.operations.map((o: { resource_type: string }) => o.resource_type)).toContain("environment");
   });
 
+  it("deleting a folder logs tombstones for every cascaded descendant folder and request (REST and push)", async () => {
+    const { owner, ws, client, base } = await setup();
+    const url = `/v1/workspaces/${ws.id}`;
+    const col = await makeCollection(app, owner, ws.id);
+    const mkFolder = async (name: string, parent: string | null) =>
+      j(await call(app, { method: "POST", url: `${url}/collections/${col.id}/folders`, as: owner, body: { name, parent_folder_id: parent } })).folder as { id: string; version: number };
+    const mkReq = async (name: string, folder: string | null) =>
+      j(await call(app, { method: "POST", url: `${url}/collections/${col.id}/requests`, as: owner, body: { name, url: "https://x.test", folder_id: folder } })).request as { id: string };
+    const buildTree = async () => {
+      const top = await mkFolder("top", null);
+      const mid = await mkFolder("mid", top.id);
+      const leaf = await mkFolder("leaf", mid.id);
+      const sibling = await mkFolder("sibling", null); // must survive
+      const rTop = await mkReq("r-top", top.id);
+      const rLeaf = await mkReq("r-leaf", leaf.id);
+      const rKeep = await mkReq("r-keep", sibling.id);
+      const rRoot = await mkReq("r-root", null); // must survive
+      return { top, mid, leaf, sibling, rTop, rLeaf, rKeep, rRoot };
+    };
+    const deletes = async (after: number) => {
+      const pull = j(await call(app, { method: "GET", url: `${base}/pull?client_id=${client}&after_checkpoint=${after}`, as: owner }));
+      return { ops: pull.operations as Array<{ resource_type: string; resource_id: string; op: string; resulting_version: number }>, checkpoint: pull.checkpoint as number };
+    };
+    const cp = async () => (await prisma.workspace.findUniqueOrThrow({ where: { id: ws.id } })).syncCheckpoint;
+
+    // REST delete
+    const t = await buildTree();
+    const before = await cp();
+    expect((await call(app, { method: "DELETE", url: `${url}/folders/${t.top.id}`, as: owner })).statusCode).toBe(200);
+    let d = await deletes(before);
+    expect(d.ops.every((o) => o.op === "delete")).toBe(true);
+    expect(d.ops.map((o) => `${o.resource_type}:${o.resource_id}`).sort()).toEqual(
+      [`folder:${t.top.id}`, `folder:${t.mid.id}`, `folder:${t.leaf.id}`, `request:${t.rTop.id}`, `request:${t.rLeaf.id}`].sort()
+    );
+    // children before their parent, the deleted folder last; versions are the rows' last versions
+    expect(d.ops.at(-1)).toMatchObject({ resource_type: "folder", resource_id: t.top.id, resulting_version: 1 });
+    expect(d.ops.findIndex((o) => o.resource_id === t.leaf.id)).toBeLessThan(d.ops.findIndex((o) => o.resource_id === t.mid.id));
+    expect(d.ops.findIndex((o) => o.resource_id === t.mid.id)).toBeLessThan(d.ops.findIndex((o) => o.resource_id === t.top.id));
+    expect(await prisma.folder.count({ where: { id: { in: [t.sibling.id] } } })).toBe(1);
+    expect(await prisma.request.count({ where: { id: { in: [t.rKeep.id, t.rRoot.id] } } })).toBe(2);
+    expect(await prisma.request.count({ where: { id: { in: [t.rTop.id, t.rLeaf.id] } } })).toBe(0);
+
+    // the same via sync push (the client's own delete op keeps its operation_id; cascaded entries get fresh ones)
+    const t2 = await buildTree();
+    const before2 = await cp();
+    const pushed = j(await call(app, { method: "POST", url: `${base}/push`, as: owner, body: { client_id: client, operations: [
+      op({ operation_id: "del-top", resource_type: "folder", resource_id: t2.top.id, op: "delete", base_version: 1 })
+    ] } }));
+    expect(pushed.accepted).toHaveLength(1);
+    d = await deletes(before2);
+    expect(d.ops).toHaveLength(5);
+    expect(d.ops.at(-1)).toMatchObject({ resource_type: "folder", resource_id: t2.top.id, op: "delete" });
+    // a client that had the whole tree can now drop exactly these ids
+    expect(new Set(d.ops.map((o) => o.resource_id))).toEqual(new Set([t2.top.id, t2.mid.id, t2.leaf.id, t2.rTop.id, t2.rLeaf.id]));
+    // deleting a childless folder still logs exactly one entry
+    const lone = await mkFolder("lone", null);
+    const before3 = await cp();
+    await call(app, { method: "DELETE", url: `${url}/folders/${lone.id}`, as: owner });
+    expect((await deletes(before3)).ops).toHaveLength(1);
+  });
+
   it("pull pages with has_more and validates the client", async () => {
     const { owner, client, base } = await setup();
     await call(app, { method: "POST", url: `${base}/push`, as: owner, body: { client_id: client, operations: Array.from({ length: 5 }, (_, i) => op({ resource_type: "collection", resource_id: newId(), op: "upsert", payload: { name: `c${i}` } })) } });

@@ -35,6 +35,7 @@ function start(name, cmd, args, opts) {
   const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...opts });
   const tail = [];
   const keep = (b) => {
+    if (process.env.E2E_STREAM_LOGS && name === 'server') process.stdout.write(String(b));
     tail.push(...String(b).split('\n').filter(Boolean));
     if (tail.length > 40) tail.splice(0, tail.length - 40);
   };
@@ -121,7 +122,7 @@ async function main() {
       SLINGER_SIGNING_SECRET: 'e2e-signing-secret-that-is-long-enough-0123456789',
       SLINGER_BASE_URL: api,
       SLINGER_ALLOWED_ORIGINS: uiCrossOrigin,
-      SLINGER_LOG_LEVEL: 'warn',
+      SLINGER_LOG_LEVEL: process.env.E2E_SERVER_LOG_LEVEL ?? 'warn',
       // Every test signs in fresh; the default 10 attempts / 5 min per IP+email would trip (covered by server tests).
       SLINGER_LOGIN_RATE_MAX: '500',
       SLINGER_SHARED_DOMAIN: 'sling.example.test',

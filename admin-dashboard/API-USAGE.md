@@ -34,10 +34,11 @@ The dashboard does not call `GET /me`.
 | Method | Path | Request | Response |
 |---|---|---|---|
 | GET | `/admin/stats` | none | counters: `users, platform_admins, disabled_users, workspaces, memberships, pending_invites, pending_join_requests, active_sessions, audit_logs, ...` (Overview page) |
-| GET | `/admin/health` | none | `{ status: ok\|degraded, services: { api, postgres }, timestamp }` (`503` with the same body when the DB is down) |
+| GET | `/admin/health` | none | `{ status: ok\|degraded, services: { api, postgres }, timestamp }`. `503` carries the **same body** when the DB ping fails; the client accepts it as data (`acceptStatus: [503]`) so the Overview shows the per-service breakdown. A 503 without a valid body (proxy page) is still the generic "temporarily unavailable" error. |
 | GET | `/admin/users` | `cursor, limit, order, q` | page of admin user |
-| POST | `/admin/users` | `{ email, display_name, platform_role: user\|platform_admin, password? }` | `201 { user, temporary_password }`. Password >= 12 chars (the dashboard always sends one). `platform_admin` needs super admin; `super_admin` can never be created via the API. |
-| PATCH | `/admin/users/{id}` | `{ platform_role }` (also accepts `display_name`, `disabled`) | `{ user }`. Super admin only; the super admin's own role is fixed. |
+| POST | `/admin/users` | `{ email, display_name, platform_role: user\|platform_admin, password? }` | `201 { user, temporary_password }`. Password >= 12 chars. The dashboard offers **Generate a temporary password** (default: `password` is omitted, the server returns `temporary_password` once and the dialog shows it once with a copy button) or **Set a password manually** (sends `password`, `temporary_password` is `null`). The server has no "require password change" flag, so the dashboard does not offer one. `platform_admin` needs super admin; `super_admin` can never be created via the API. |
+| PATCH | `/admin/users/{id}` | `{ platform_role }` (role change: super admin only; the super admin's role is fixed) | `{ user }` |
+| PATCH | `/admin/users/{id}` | `{ disabled: true\|false }` (also accepts `display_name`) | `{ user }` (`disabled` in the admin view). Platform admins may disable/enable ordinary users, only the super admin may touch other admins; nobody can disable themselves and the super admin can never be disabled (`403 forbidden`, message shown in the confirm dialog). Disabling revokes all dashboard sessions and refresh tokens; enabling does not restore them. |
 | GET | `/admin/workspaces` | `cursor, limit, order, q` | page of workspace (+ `member_count`) |
 | GET | `/admin/audit-logs` | `cursor, limit, order, action` (also `actor_user_id, workspace_id`) | page of audit log |
 
@@ -48,6 +49,7 @@ The dashboard does not call `GET /me`.
 | GET | `/workspaces` | `cursor, limit, order` | caller's workspaces with `role` (non-platform-admins) |
 | POST | `/workspaces` | `{ name, slug?, description? }` | `201 { workspace }`; duplicate slug `409 conflict`; caller becomes owner |
 | GET | `/workspaces/{id}` | none | `{ workspace, membership: { role } \| null }` (`null` for non-member platform admins) |
+| PATCH | `/workspaces/{id}` | `{ name?, description?, visibility?: private\|internal, default_role_for_requests?: viewer\|editor, version }` | `{ workspace }`. Owner or platform admin. Stale `version` -> `409 version_mismatch` with `details.current_version`; the Settings form then shows a conflict message and "Load latest version". Only changed fields are sent. |
 | DELETE | `/workspaces/{id}` | none | `{ ok: true }`. Owner or **super admin only** (platform admin -> 403) |
 | GET | `/workspaces/{id}/members` | `cursor, limit` | page of member (active only) |
 | PATCH | `/workspaces/{id}/members/{member_id}` | `{ role: admin\|editor\|viewer, version }` | `{ member }`. Owner / platform admin; owner row is fixed |
@@ -61,6 +63,7 @@ The dashboard does not call `GET /me`.
 | GET | `/workspaces/{id}/hosts` | `cursor, limit, order` | page of host; pending hosts carry `verification: { dns_record_type: "TXT", dns_record_name, dns_record_value }` (owner / platform admin) |
 | POST | `/workspaces/{id}/hosts` | `{ host, kind: custom_domain\|dedicated_subdomain }` | `201 { host, verification \| null }` |
 | POST | `/workspaces/{id}/hosts/{host_id}/verify` | none | `{ host, verified }`; `verified: false` keeps the host pending |
+| DELETE | `/workspaces/{id}/hosts/{host_id}` | none | `{ ok: true }`. Owner / platform admin; the dashboard asks for confirmation first (audit: `host.removed`) |
 | GET | `/workspaces/{id}/audit-logs` | `cursor, limit, order, action` | page of audit log (owner/admin) |
 
 Audit log entry: `{ id, actor_user_id, actor_email, action, resource_type, resource_id, workspace_id, request_id, details, created_at }`.
@@ -72,9 +75,8 @@ The filter list lives in `src/lib/components/AuditTable.svelte`.
 
 `src/lib/permissions.ts` mirrors the server matrix (the server stays authoritative): invites, join requests and the workspace audit
 log need owner/admin; hosts, role changes and member removal need owner; delete needs owner or super admin; platform roles can only be
-changed by the super admin and never include a second `super_admin`. Tabs a role cannot use are hidden instead of erroring.
+changed by the super admin and never include a second `super_admin`. Workspace settings need owner or platform admin; disabling a user follows `disableUserPolicy` (not yourself, never the super admin, admins only by the super admin). Tabs a role cannot use are hidden instead of erroring.
 
 ## Not used by the dashboard
 
-Host removal (`DELETE .../hosts/{id}`), workspace settings (`PATCH /workspaces/{id}`), `PATCH /admin/users` `disabled`/`display_name`,
-`GET /admin/workspaces/{id}`, `DELETE /admin/workspaces/{id}`, `POST /me/password`, content/sync/realtime routes.
+`PATCH /admin/users` `display_name`, `GET /admin/workspaces/{id}`, `DELETE /admin/workspaces/{id}`, `POST /me/password`, content/sync/realtime routes.

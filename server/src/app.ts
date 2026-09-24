@@ -9,6 +9,8 @@ import { ZodError } from "zod";
 import type { AppConfig } from "./config.js";
 import { AppError, errorBody, type ErrorCode } from "./lib/errors.js";
 import { responseValidation } from "./lib/route.js";
+import { MemoryRateLimitStore, PostgresRateLimitStore, type RateLimitStore } from "./lib/rateLimitStore.js";
+import { prisma } from "./db.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerDevicePage } from "./routes/devicePage.js";
@@ -30,6 +32,8 @@ export type BuildAppOptions = {
   /** Validate every JSON response against its declared schema (tests). */
   validateResponses?: boolean;
   resolveTxt?: (name: string) => Promise<string[]>;
+  /** Overrides the store chosen by `config.rateLimitStore` (custom backends, tests). */
+  rateLimitStore?: RateLimitStore;
 };
 
 const REQUEST_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -75,6 +79,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   });
 
   app.decorate("config", cfg);
+  app.decorate("rateLimitStore", opts.rateLimitStore ?? (cfg.rateLimitStore === "postgres" ? new PostgresRateLimitStore(prisma) : new MemoryRateLimitStore()));
   app.decorate("resolveTxt", opts.resolveTxt ?? (async (name: string) => (await dnsResolveTxt(name)).map((c) => c.join(""))));
 
   // ---- request id + strict origin policy ----

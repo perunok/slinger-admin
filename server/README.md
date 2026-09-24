@@ -62,6 +62,7 @@ All variables are validated with zod at startup; **every** problem is reported i
 | `SLINGER_SESSION_TTL` | `604800` | dashboard session/cookie lifetime, seconds |
 | `SLINGER_DEVICE_FLOW_TTL` | `600` | device login code lifetime, seconds |
 | `SLINGER_LOGIN_RATE_MAX` / `SLINGER_LOGIN_RATE_WINDOW_SECONDS` | `10` / `300` | per **IP + email** budget for credential endpoints, then `429 rate_limited` |
+| `SLINGER_RATE_LIMIT_STORE` | `memory` | where those counters live: `memory` (per process) or `postgres` (shared by every instance through the existing database, table `rate_limit_buckets`, no Redis needed). Set `postgres` as soon as you run more than one server instance. |
 | `SLINGER_LOG_LEVEL` | `info` | pino level. Authorization/Cookie/CSRF headers are redacted; query strings are not logged. |
 | `SLINGER_SKIP_MIGRATIONS` | `0` | Docker entrypoint only: `1` skips `prisma migrate deploy` on boot |
 
@@ -89,7 +90,9 @@ between runs. Every JSON response is additionally validated against its declared
 (`validateResponses`), which keeps `openapi.yaml` honest. Coverage includes: owner-vs-platform-admin boundaries, viewer blocked
 from every write incl. sync push, cross-workspace IDOR (404s), invite token/email binding, `version_mismatch`, CSRF (cookie vs
 Bearer), login rate limiting, CORS allowlist, request-id propagation, body cap, secret masking, cursor pagination on every
-list, audit-log writes, sync push/pull, admin routes, hosts + DNS verification, bootstrap validation and production config failures.
+list, audit-log writes, sync push/pull (incl. tombstones for cascaded folder deletes), admin routes (incl. a disabled user's sessions,
+access tokens and refresh tokens being rejected, and the 503 health body), hosts + DNS verification, the Postgres-backed rate limit
+store shared by two app instances, bootstrap validation and production config failures.
 
 ## Docker / deployment
 
@@ -142,6 +145,8 @@ and exits (forced exit after 10 s).
 - **Secret variables:** `is_secret: true` values are write-only: responses have `value: null, masked_value: "••••••••"`; stored
   encrypted (AES-256-GCM); never present in sync pull payloads, audit logs or logs.
 - **Deleting** a collection/folder/environment cascades to children (folder delete cascades to child folders and their requests).
+  Every cascaded child gets its own `delete` entry in the sync log (children first, the deleted parent last), so pulling clients
+  converge without re-deriving the cascade. Entry format unchanged.
 - Device login: desktop calls `POST /v1/auth/device/start`, opens `verification_uri_complete` (`/device?user_code=..`, an HTML page where
   the user enters email + password) **or** the dashboard's signed-in user calls `POST /v1/auth/device/approve {user_code}`; the desktop polls
   `POST /v1/auth/device/poll {device_code}` -> `pending` | `approved` (tokens, once) | `expired`.
@@ -336,7 +341,15 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 
 ## Known limitations / not built
 
-- Login rate limiting is in-process memory (per instance); run a shared store (e.g. Redis) before scaling horizontally.
+- Login rate limiting counts in per-process memory by default, so with N instances the effective budget is N x max and a restart
+  resets it. Set `SLINGER_RATE_LIMIT_STORE=postgres` to share the counters through the database (one atomic upsert per attempt using
+  the database clock; keys are SHA-256 hashed, expired rows are swept hourly). The limiter talks to a small `RateLimitStore`
+  interface (`src/lib/rateLimitStore.ts`, `hit(key, windowMs)`), so another backend (e.g. Redis) can be injected via
+  `buildApp({ rateLimitStore })` without touching the routes. Fixed window, per IP + email; there is no global/IP-only limit.
+- No "must change password" flag: `POST /v1/admin/users` can generate a temporary password, but the account is not forced to change it
+  (users can call `POST /v1/me/password`); that would need a schema field and a login-flow change.
+- `default_role_for_requests` on a workspace is stored and returned but not applied to join requests by the server.
+- Sync-log entries for cascaded children are emitted in the same transaction as the parent delete; they carry each child's last
+  version. A client that pushes a delete for a cascaded child afterwards gets the normal "already deleted" outcome.
 - No email delivery (invite token is returned in the API response), no TLS provisioning logic in the API (Caddy does it), no realtime service.
-- Folder deletion cascades to nested requests without emitting a sync-log entry per cascaded child (the folder delete op is logged).
 - Secret variable values are encrypted at rest (key derived from `SLINGER_SIGNING_SECRET`) and the API has no decrypt path: they are write-only until a consumer with the key exists.

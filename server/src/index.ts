@@ -39,7 +39,8 @@ async function main(): Promise<void> {
     void Promise.all([
       prisma.session.deleteMany({ where: { expiresAt: { lt: now } } }),
       prisma.refreshToken.deleteMany({ where: { expiresAt: { lt: now } } }),
-      prisma.deviceFlow.deleteMany({ where: { expiresAt: { lt: now } } })
+      prisma.deviceFlow.deleteMany({ where: { expiresAt: { lt: now } } }),
+      app.rateLimitStore.sweep?.()
     ]).catch((err) => app.log.warn({ err }, "housekeeping sweep failed"));
   }, 60 * 60 * 1000);
   sweep.unref();

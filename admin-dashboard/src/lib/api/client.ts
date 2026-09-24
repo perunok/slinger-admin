@@ -15,6 +15,11 @@ export interface RequestOptions<S extends z.ZodType> {
    * opt out of the global "session expired" handler.
    */
   handleUnauthorized?: boolean;
+  /**
+   * Non-2xx statuses whose body is still a valid `schema` payload (e.g. the health probe answers 503 with its
+   * per-service breakdown). If the body does not match, the usual error handling applies.
+   */
+  acceptStatus?: number[];
   signal?: AbortSignal;
 }
 
@@ -137,7 +142,13 @@ export class HttpClient {
       }
     }
 
-    if (!res.ok) throw this.toHttpError(res, jsonOk ? json : undefined, opts.handleUnauthorized !== false);
+    if (!res.ok) {
+      if (jsonOk && opts.acceptStatus?.includes(res.status)) {
+        const accepted = opts.schema.safeParse(json);
+        if (accepted.success) return accepted.data;
+      }
+      throw this.toHttpError(res, jsonOk ? json : undefined, opts.handleUnauthorized !== false);
+    }
 
     if (!jsonOk) {
       throw new ApiError({

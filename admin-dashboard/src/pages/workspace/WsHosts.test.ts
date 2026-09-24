@@ -65,4 +65,53 @@ describe('WsHosts', () => {
     expect(screen.queryByRole('button', { name: 'Add host' })).toBeNull();
     expect(screen.queryByRole('button', { name: /re-check/i })).toBeNull();
   });
+
+  it('owner removes a host after confirming; the row disappears and the API is called', async () => {
+    session.user = user({ platform_role: 'user' });
+    const active = { ...pending, status: 'active', tls_status: 'ready' };
+    const calls = stubApi((r) => {
+      if (r.method === 'GET') return { json: { items: [active, { ...pending, id: 'h2', host: 'other.acme.com' }] } };
+      if (r.method === 'DELETE' && r.path === '/workspaces/w1/hosts/h1') return { json: { ok: true } };
+    });
+    render(WsHosts, { props: { id: 'w1', role: 'owner' } });
+    const ev = userEvent.setup();
+    await ev.click(await screen.findByRole('button', { name: 'Remove host api.acme.com' }));
+    const dlg = await screen.findByRole('dialog', { hidden: true });
+    expect(within(dlg).getByText(/stop resolving to this workspace/i)).toBeInTheDocument();
+    expect(calls.some((c) => c.method === 'DELETE')).toBe(false); // nothing before confirming
+    await ev.click(within(dlg).getByRole('button', { name: 'Remove host', hidden: true }));
+    await waitFor(() => expect(screen.queryByText('api.acme.com')).toBeNull());
+    expect(screen.getByText('other.acme.com')).toBeInTheDocument();
+    expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual(['/workspaces/w1/hosts/h1']);
+    expect(toasts.items.some((t) => /Removed api.acme.com/.test(t.message))).toBe(true);
+  });
+
+  it('cancelling the confirmation removes nothing; a server error stays in the dialog and the row stays', async () => {
+    session.user = user({ platform_role: 'user' });
+    stubApi((r) => {
+      if (r.method === 'GET') return { json: { items: [pending] } };
+      if (r.method === 'DELETE') return { status: 404, json: { error: { code: 'not_found', message: 'host not found' } } };
+    });
+    render(WsHosts, { props: { id: 'w1', role: 'owner' } });
+    const ev = userEvent.setup();
+    await ev.click(await screen.findByRole('button', { name: 'Remove host api.acme.com' }));
+    await ev.click(within(await screen.findByRole('dialog', { hidden: true })).getByRole('button', { name: 'Cancel', hidden: true }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await ev.click(screen.getByRole('button', { name: 'Remove host api.acme.com' }));
+    await ev.click(within(await screen.findByRole('dialog', { hidden: true })).getByRole('button', { name: 'Remove host', hidden: true }));
+    expect(await screen.findByText('host not found')).toBeInTheDocument();
+    expect(screen.getAllByRole('row', { name: /api.acme.com/ }).length).toBeGreaterThan(0);
+  });
+
+  it('non-owners see no Remove button; platform admins do', async () => {
+    session.user = user({ platform_role: 'user' });
+    stubApi(() => ({ json: { items: [pending] } }));
+    const { unmount } = render(WsHosts, { props: { id: 'w1', role: 'admin' } });
+    await screen.findByText('api.acme.com');
+    expect(screen.queryByRole('button', { name: /remove host/i })).toBeNull();
+    unmount();
+    session.user = user({ platform_role: 'platform_admin' });
+    render(WsHosts, { props: { id: 'w1', role: null } });
+    expect(await screen.findByRole('button', { name: 'Remove host api.acme.com' })).toBeInTheDocument();
+  });
 });

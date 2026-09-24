@@ -166,6 +166,7 @@ model Membership {
 
   @@unique([workspaceId, userId])
   @@index([workspaceId])
+  @@index([userId])
   @@map("memberships")
 }
 
@@ -203,6 +204,7 @@ model JoinRequest {
   version         Int               @default(1)
 
   @@index([workspaceId])
+  @@index([requesterUserId])
   @@map("join_requests")
 }
 
@@ -257,6 +259,7 @@ model Folder {
 
   @@index([workspaceId])
   @@index([collectionId])
+  @@index([parentFolderId])
   @@map("folders")
 }
 
@@ -278,6 +281,7 @@ model Request {
 
   @@index([workspaceId])
   @@index([collectionId])
+  @@index([folderId])
   @@map("requests")
 }
 
@@ -361,5 +365,17 @@ model AuditLog {
 
   @@index([workspaceId, createdAt])
   @@index([createdAt])
+  @@index([actorUserId])
   @@map("audit_logs")
+}
+
+// Fixed-window counters for the optional shared login rate limiter (SLINGER_RATE_LIMIT_STORE=postgres).
+// `key` is a SHA-256 of the limiter key (IP + email), so no e-mail addresses are stored here.
+model RateLimitBucket {
+  key       String   @id
+  count     Int
+  expiresAt DateTime
+
+  @@index([expiresAt])
+  @@map("rate_limit_buckets")
 }

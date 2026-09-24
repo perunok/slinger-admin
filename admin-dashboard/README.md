@@ -69,10 +69,23 @@ Design notes:
 - **Themes**: `data-theme` on `<html>` (`system`, `light`, `dark`, `midnight`, `contrast`), persisted in
   `localStorage`, applied before first paint from `index.html`. Components use CSS variables only; tokens are defined
   in `src/app.css`.
+- **Destructive / sensitive actions**: removing a host, disabling/enabling a user, deleting a workspace or member and revoking an
+  invite go through `ConfirmDialog` (server errors stay in the dialog). A generated temporary password is held only in the open
+  dialog state and its copy button keeps the value out of the accessible name.
+- **Workspace settings** (Overview tab, owner or platform admin): sends only changed fields with the loaded `version`; on
+  `version_mismatch` it keeps the user's edits, shows who-changed-it guidance and offers "Load latest version".
+- **Platform health**: `GET /admin/health` may answer 503 with a valid body; the client treats that as data
+  (`acceptStatus`), so the card shows "Degraded" plus the failing services.
 - **Role-based UI**: actions the current role cannot perform are hidden or disabled with an explanation, following
   the contract's matrix. The server remains the authority.
 
 ## Known limitations
+
+- No "require password change" option when creating users: the server has no such flag (generated temporary passwords are
+  supported). Users can change their password through `POST /v1/me/password`; the dashboard has no UI for it.
+- The workspace setting "default role for requests" is stored by the server but not enforced.
+- With the real server, `GET /admin/health` can only answer 503 when the request was authenticated but the database ping failed
+  (authentication itself needs the database), so a full outage shows the generic error; the e2e covers the 503 body by replaying it.
 
 The end-to-end smoke test lives at the repo root (`npm run e2e`). Keyboard/screen-reader support relies on native elements (`<dialog>`,
 `<select>`, links, buttons) and has not been audited with assistive technology.

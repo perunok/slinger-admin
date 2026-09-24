@@ -33,6 +33,8 @@ export const canModerateMembership = (p: Role, w: WsRole) => isPlatformAdmin(p) 
 /** Change a member's role, remove a member, manage hosts. */
 export const canManageMembers = (p: Role, w: WsRole) => isPlatformAdmin(p) || w === 'owner';
 export const canManageHosts = canManageMembers;
+/** PATCH /workspaces/{id} (name, description, visibility, default role for requests): owner or platform admin. */
+export const canEditWorkspaceSettings = canManageMembers;
 
 /** Tabs backed by owner/admin-only routes (`/hosts` needs owner, `/audit-logs` and `/invites` need admin). */
 export const canViewHosts = canManageMembers;
@@ -51,3 +53,21 @@ export const platformRoleLabel: Record<PlatformRole, string> = {
   platform_admin: 'Platform admin',
   user: 'User',
 };
+
+/**
+ * Disable / re-enable an account (PATCH /admin/users/{id} `{disabled}`). Mirrors the server: nobody can disable
+ * themselves, the super admin can never be disabled, and only a super admin may touch another platform admin.
+ * `reason` explains a disabled control in the UI.
+ */
+export function disableUserPolicy(
+  actor: { id: string; platform_role: PlatformRole } | null | undefined,
+  target: { id: string; platform_role: PlatformRole },
+): { allowed: true } | { allowed: false; reason: string } {
+  if (!actor || !isPlatformAdmin(actor.platform_role)) return { allowed: false, reason: 'Only platform admins can disable users' };
+  if (target.id === actor.id) return { allowed: false, reason: 'You cannot disable your own account' };
+  if (target.platform_role === 'super_admin') return { allowed: false, reason: 'The super admin cannot be disabled' };
+  if (target.platform_role === 'platform_admin' && !isSuperAdmin(actor.platform_role)) {
+    return { allowed: false, reason: 'Only the super admin can disable a platform admin' };
+  }
+  return { allowed: true };
+}

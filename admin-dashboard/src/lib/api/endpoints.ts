@@ -23,7 +23,9 @@ import {
   workspaceDetailSchema,
   workspaceSchema,
   type Page,
+  type DefaultRequestRole,
   type PlatformRole,
+  type WorkspaceVisibility,
   type WorkspaceRole,
 } from './schemas';
 
@@ -67,6 +69,11 @@ export function createApi(c: HttpClient) {
       users: (p: ListParams) => list('/admin/users', userSchema, { order: 'desc', cursor: p.cursor, limit: p.limit, q: p.q }),
       createUser: (input: { email: string; display_name: string; platform_role: PlatformRole; password?: string }) =>
         c.request('POST', '/admin/users', { body: input, schema: createUserResponseSchema }),
+      setUserDisabled: (userId: string, disabled: boolean) =>
+        c.request('PATCH', `/admin/users/${enc(userId)}`, {
+          body: { disabled },
+          schema: z.object({ user: userSchema }),
+        }),
       setUserRole: (userId: string, platform_role: PlatformRole) =>
         c.request('PATCH', `/admin/users/${enc(userId)}`, {
           body: { platform_role },
@@ -77,7 +84,8 @@ export function createApi(c: HttpClient) {
       auditLogs: (p: ListParams & { action?: string }) =>
         list('/admin/audit-logs', auditLogSchema, { cursor: p.cursor, limit: p.limit, action: p.action, order: 'desc' }),
       stats: () => c.request('GET', '/admin/stats', { schema: statsSchema }),
-      health: () => c.request('GET', '/admin/health', { schema: healthSchema }),
+      // 503 carries the same body (`status: degraded`, `services.postgres: down`), so it is data, not an error.
+      health: () => c.request('GET', '/admin/health', { schema: healthSchema, acceptStatus: [503] }),
     },
 
     workspaces: {
@@ -87,6 +95,17 @@ export function createApi(c: HttpClient) {
         c.request('POST', '/workspaces', { body: input, schema: z.object({ workspace: workspaceSchema }) }),
       get: (id: string) => c.request('GET', ws(id), { schema: workspaceDetailSchema }),
       remove: (id: string) => c.request('DELETE', ws(id), { schema: anyObjectSchema }),
+      /** Owner or platform admin. `version` is the workspace version the form was loaded from (409 `version_mismatch` if stale). */
+      update: (
+        id: string,
+        input: {
+          name?: string;
+          description?: string;
+          visibility?: WorkspaceVisibility;
+          default_role_for_requests?: DefaultRequestRole;
+          version: number;
+        },
+      ) => c.request('PATCH', ws(id), { body: input, schema: z.object({ workspace: workspaceSchema }) }),
 
       members: (id: string, p: ListParams) => list(`${ws(id)}/members`, memberSchema, { cursor: p.cursor, limit: p.limit }),
       setMemberRole: (id: string, memberId: string, role: WorkspaceRole, version: number) =>
@@ -121,6 +140,8 @@ export function createApi(c: HttpClient) {
         c.request('POST', `${ws(id)}/hosts`, { body: input, schema: hostWithVerificationSchema }),
       verifyHost: (id: string, hostId: string) =>
         c.request('POST', `${ws(id)}/hosts/${enc(hostId)}/verify`, { schema: verifyHostResponseSchema }),
+
+      removeHost: (id: string, hostId: string) => c.request('DELETE', `${ws(id)}/hosts/${enc(hostId)}`, { schema: anyObjectSchema }),
 
       auditLogs: (id: string, p: ListParams & { action?: string }) =>
         list(`${ws(id)}/audit-logs`, auditLogSchema, { cursor: p.cursor, limit: p.limit, action: p.action, order: 'desc' }),

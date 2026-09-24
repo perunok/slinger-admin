@@ -30,6 +30,8 @@ export function validateNewUser(v: {
   email: string;
   display_name: string;
   password: string;
+  /** The server generates a temporary password, so none is typed and none is validated. */
+  generate?: boolean;
 }): Errors<'email' | 'display_name' | 'password'> {
   const e: Errors<'email' | 'display_name' | 'password'> = {};
   if (!v.email.trim()) e.email = 'Email is required.';
@@ -37,6 +39,7 @@ export function validateNewUser(v: {
   const name = v.display_name.trim();
   if (!name) e.display_name = 'Display name is required.';
   else if (name.length > 80) e.display_name = 'Display name must be 80 characters or fewer.';
+  if (v.generate) return e;
   if (!v.password) e.password = 'Password is required.';
   else if (v.password.length < MIN_PASSWORD) e.password = `Password must be at least ${MIN_PASSWORD} characters.`;
   return e;
@@ -55,6 +58,15 @@ export function validateNewWorkspace(v: {
   else if (v.slug.length < 3) e.slug = 'Slug must be at least 3 characters.';
   else if (!SLUG_RE.test(v.slug)) e.slug = 'Use lowercase letters, numbers and single hyphens only.';
   if (v.description.length > 500) e.description = 'Description must be 500 characters or fewer.';
+  return e;
+}
+
+export function validateWorkspaceSettings(v: { name: string; description: string }): Errors<'name' | 'description'> {
+  const e: Errors<'name' | 'description'> = {};
+  const name = v.name.trim();
+  if (!name) e.name = 'Name is required.';
+  else if (name.length > 120) e.name = 'Name must be 120 characters or fewer.';
+  if (v.description.length > 2000) e.description = 'Description must be 2000 characters or fewer.';
   return e;
 }
 

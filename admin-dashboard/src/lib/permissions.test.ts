@@ -45,4 +45,26 @@ describe('authorization matrix', () => {
     expect(p.isOwnerLocked('admin')).toBe(false);
     expect(p.ASSIGNABLE_WORKSPACE_ROLES).not.toContain('owner');
   });
+  it('workspace settings: owner or platform admin only (workspace admins/editors cannot)', () => {
+    expect(p.canEditWorkspaceSettings('user', 'owner')).toBe(true);
+    expect(p.canEditWorkspaceSettings('platform_admin', null)).toBe(true);
+    expect(p.canEditWorkspaceSettings('super_admin', null)).toBe(true);
+    expect(p.canEditWorkspaceSettings('user', 'admin')).toBe(false);
+    expect(p.canEditWorkspaceSettings('user', 'editor')).toBe(false);
+    expect(p.canEditWorkspaceSettings('user', null)).toBe(false);
+  });
+  it('disable user: never self or the super admin; platform admins only by the super admin', () => {
+    const sa = { id: 's', platform_role: 'super_admin' as const };
+    const pa = { id: 'p', platform_role: 'platform_admin' as const };
+    const plain = { id: 'u', platform_role: 'user' as const };
+    expect(p.disableUserPolicy(sa, plain)).toEqual({ allowed: true });
+    expect(p.disableUserPolicy(pa, plain)).toEqual({ allowed: true });
+    expect(p.disableUserPolicy(sa, pa)).toEqual({ allowed: true });
+    expect(p.disableUserPolicy(pa, { id: 'p2', platform_role: 'platform_admin' })).toMatchObject({ allowed: false });
+    expect(p.disableUserPolicy(sa, sa)).toMatchObject({ allowed: false, reason: expect.stringMatching(/own account/) });
+    expect(p.disableUserPolicy(pa, sa)).toMatchObject({ allowed: false });
+    expect(p.disableUserPolicy(pa, pa)).toMatchObject({ allowed: false });
+    expect(p.disableUserPolicy(plain, { id: 'x', platform_role: 'user' })).toMatchObject({ allowed: false });
+    expect(p.disableUserPolicy(null, plain)).toMatchObject({ allowed: false });
+  });
 });

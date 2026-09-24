@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { jwtVerify } from "jose";
 import { prisma } from "../src/db.js";
@@ -83,6 +83,59 @@ describe("admin users", () => {
   });
 });
 
+describe("disabling a user", () => {
+  it("rejects the disabled user's existing dashboard session, access token AND refresh tokens; re-enabling does not resurrect them", async () => {
+    const victim = await createUser();
+    // desktop-style credentials via the device flow (yields a real access + refresh token pair)
+    const start = j(await call(app, { method: "POST", url: "/v1/auth/device/start", body: { client_name: "slinger-desktop", device_name: "Laptop" } }));
+    await call(app, { method: "POST", url: "/v1/auth/device/approve", as: victim, body: { user_code: start.user_code } });
+    const tokens = j(await call(app, { method: "POST", url: "/v1/auth/device/poll", body: { device_code: start.device_code } }));
+    expect(tokens.status).toBe("approved");
+    const bearer = { token: tokens.access_token as string };
+    const login = await call(app, { method: "POST", url: "/v1/auth/browser/login", body: { email: victim.email, password: PASSWORD } });
+    const cookie = { slinger_session: login.cookies[0]!.value };
+    expect((await call(app, { method: "GET", url: "/v1/me", as: bearer })).statusCode).toBe(200);
+    expect((await call(app, { method: "GET", url: "/v1/auth/browser/session", cookies: cookie })).statusCode).toBe(200);
+
+    expect((await call(app, { method: "PATCH", url: `/v1/admin/users/${victim.id}`, as: pa, body: { disabled: true } })).statusCode).toBe(200);
+    expect(j(await call(app, { method: "GET", url: `/v1/admin/users?q=${encodeURIComponent(victim.email)}`, as: pa })).items[0]).toMatchObject({ disabled: true });
+
+    expect((await call(app, { method: "GET", url: "/v1/me", as: bearer })).statusCode).toBe(401);
+    expect((await call(app, { method: "GET", url: "/v1/auth/browser/session", cookies: cookie })).statusCode).toBe(401);
+    const refresh = await call(app, { method: "POST", url: "/v1/auth/refresh", body: { refresh_token: tokens.refresh_token } });
+    expect(refresh.statusCode).toBe(401);
+    expect(await prisma.refreshToken.count({ where: { userId: victim.id, revokedAt: null } })).toBe(0);
+    expect((await call(app, { method: "POST", url: "/v1/auth/browser/login", body: { email: victim.email, password: PASSWORD } })).statusCode).toBe(401);
+    // a pending device flow approved before the disable cannot be turned into tokens either
+    const start2 = j(await call(app, { method: "POST", url: "/v1/auth/device/start", body: { client_name: "slinger-desktop", device_name: "Laptop" } }));
+    const flow = await prisma.deviceFlow.findFirstOrThrow({ where: { userCode: start2.user_code } });
+    await prisma.deviceFlow.update({ where: { id: flow.id }, data: { status: "approved", userId: victim.id } });
+    expect(j(await call(app, { method: "POST", url: "/v1/auth/device/poll", body: { device_code: start2.device_code } })).status).toBe("expired");
+
+    // enabling again lets the user sign in anew, but the old credentials stay dead
+    expect((await call(app, { method: "PATCH", url: `/v1/admin/users/${victim.id}`, as: pa, body: { disabled: false } })).statusCode).toBe(200);
+    expect((await call(app, { method: "POST", url: "/v1/auth/refresh", body: { refresh_token: tokens.refresh_token } })).statusCode).toBe(401);
+    expect((await call(app, { method: "GET", url: "/v1/auth/browser/session", cookies: cookie })).statusCode).toBe(401);
+    expect((await call(app, { method: "POST", url: "/v1/auth/browser/login", body: { email: victim.email, password: PASSWORD } })).statusCode).toBe(200);
+  });
+
+  it("nobody can disable themselves; only the super admin can disable platform admins; the super admin cannot be disabled", async () => {
+    const admin = await createUser("platform_admin");
+    const plain = await createUser();
+    const self = await call(app, { method: "PATCH", url: `/v1/admin/users/${admin.id}`, as: admin, body: { disabled: true } });
+    expect(self.statusCode).toBe(403); // platform_admin modifying an admin (itself) needs super_admin
+    expect((await call(app, { method: "PATCH", url: `/v1/admin/users/${pa.id}`, as: pa, body: { disabled: true } })).statusCode).toBe(403);
+    expect((await call(app, { method: "PATCH", url: `/v1/admin/users/${admin.id}`, as: sa, body: { disabled: true } })).statusCode).toBe(200);
+    expect((await call(app, { method: "PATCH", url: `/v1/admin/users/${admin.id}`, as: sa, body: { disabled: false } })).statusCode).toBe(200);
+    const saSelf = await call(app, { method: "PATCH", url: `/v1/admin/users/${sa.id}`, as: sa, body: { disabled: true } });
+    expect(saSelf.statusCode).toBe(403);
+    expect(saSelf.json().error.message).toMatch(/cannot disable your own account/);
+    expect((await call(app, { method: "PATCH", url: `/v1/admin/users/${sa.id}`, as: pa, body: { disabled: true } })).statusCode).toBe(403);
+    expect((await call(app, { method: "GET", url: "/v1/me", as: sa })).statusCode).toBe(200);
+    expect(plain.id).toBeTruthy();
+  });
+});
+
 describe("admin workspaces, audit logs, health, stats", () => {
   it("lists/inspects workspaces, super_admin deletes one and the deletion is audited", async () => {
     const owner = await createUser();
@@ -109,6 +162,18 @@ describe("admin workspaces, audit logs, health, stats", () => {
     expect(s.workspaces).toBeGreaterThan(0);
     for (const v of Object.values(s)) expect(typeof v).toBe("number");
     expect((await call(app, { method: "GET", url: "/v1/admin/health", as: await createUser() })).statusCode).toBe(403);
+  });
+
+  it("health answers 503 WITH the per-service body when the database ping fails (the dashboard renders it)", async () => {
+    // Authentication uses regular Prisma queries, so only the `SELECT 1` probe is made to fail here.
+    // (`mockRestore` would break the Prisma client proxy, so the spy stays installed and just delegates afterwards.)
+    const spy = vi.spyOn(prisma, "$queryRaw").mockRejectedValueOnce(new Error("connection refused"));
+    const h = await call(app, { method: "GET", url: "/v1/admin/health", as: pa });
+    expect(h.statusCode).toBe(503);
+    expect(j(h)).toMatchObject({ status: "degraded", services: { api: "ok", postgres: "down" } });
+    expect(new Date(j(h).timestamp).getTime()).not.toBeNaN();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect((await call(app, { method: "GET", url: "/v1/admin/health", as: pa })).statusCode).toBe(200);
   });
 });
 

@@ -37,6 +37,16 @@
   }
   onMount(load);
 
+  /** Quiet re-fetch (no spinner, keeps the tab mounted); used to resolve a settings version conflict. */
+  async function reload() {
+    try {
+      detail = await api.workspaces.get(id);
+    } catch (e) {
+      loadError = errorMessage(e);
+      throw e;
+    }
+  }
+
   const role = $derived(detail?.membership?.role ?? null);
   const labels: Record<WorkspaceTab, string> = {
     overview: 'Overview',
@@ -87,7 +97,12 @@
     {#if !tabAllowed}
       <div class="card" role="alert">Your role does not include access to this section.</div>
     {:else if tab === 'overview'}
-      <WsOverview workspace={detail.workspace} {role} />
+      <WsOverview
+        workspace={detail.workspace}
+        {role}
+        onupdate={(w) => detail && (detail = { ...detail, workspace: w })}
+        onreload={reload}
+      />
     {:else if tab === 'members'}
       <WsMembers {id} {role} />
     {:else if tab === 'invites'}

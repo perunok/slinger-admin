@@ -39,6 +39,8 @@ services:
       SLINGER_BASE_URL: ${SLINGER_BASE_URL:-http://localhost}
       SLINGER_ALLOWED_ORIGINS: ${SLINGER_ALLOWED_ORIGINS:-}
       SLINGER_SHARED_DOMAIN: ${SLINGER_SHARED_DOMAIN:-}
+      # memory (per process) or postgres (shared by all server instances)
+      SLINGER_RATE_LIMIT_STORE: ${SLINGER_RATE_LIMIT_STORE:-memory}
       # The proxy is on the internal network, so its X-Forwarded-For is trustworthy (real client IP for rate limiting).
       SLINGER_TRUST_PROXY: "true"
       # Secure cookies need HTTPS. Set to true when using deploy/Caddyfile.https (see .env.example).

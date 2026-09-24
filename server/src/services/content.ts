@@ -164,7 +164,24 @@ export async function deleteFolder(tx: Tx, wsId: string, id: string, expected?: 
   const row = await tx.folder.findFirst({ where: { id, workspaceId: wsId } });
   if (!row) throw notFound("folder");
   assertVersionIfGiven(row, expected);
+  // Descendant folders and the requests inside any of them are removed by FK cascade. Log a tombstone for each
+  // (children first, the folder itself last) so pullers converge without having to re-derive the cascade.
+  const descendants = await tx.$queryRaw<Array<{ id: string; version: number; depth: number }>>`
+    WITH RECURSIVE tree AS (
+      SELECT id, version, 1 AS depth FROM folders WHERE "parentFolderId" = ${id} AND "workspaceId" = ${wsId}
+      UNION ALL
+      SELECT f.id, f.version, t.depth + 1 FROM folders f JOIN tree t ON f."parentFolderId" = t.id WHERE f."workspaceId" = ${wsId}
+    )
+    SELECT id, version, depth FROM tree ORDER BY depth DESC, id`;
+  const requests = await tx.request.findMany({
+    where: { workspaceId: wsId, folderId: { in: [id, ...descendants.map((d) => d.id)] } },
+    select: { id: true, version: true },
+    orderBy: { id: "asc" }
+  });
   await tx.folder.deleteMany({ where: { id, workspaceId: wsId } });
+  const childCtx = ctx && { ...ctx, operationId: undefined };
+  for (const r of requests) await log(tx, wsId, "request", r, "delete", childCtx);
+  for (const f of descendants) await log(tx, wsId, "folder", { id: f.id, version: Number(f.version) }, "delete", childCtx);
   await log(tx, wsId, "folder", row, "delete", ctx);
 }
 

@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import rateLimit from "@fastify/rate-limit";
+import { fastifyRateLimitStore } from "../lib/rateLimitStore.js";
 import { z } from "zod";
 import { prisma } from "../db.js";
 import type { AppConfig } from "../config.js";
@@ -95,6 +96,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     await scope.register(rateLimit, {
       global: false,
       hook: "preHandler",
+      store: fastifyRateLimitStore(app.rateLimitStore),
       errorResponseBuilder: (_req, ctx) =>
         new AppError("rate_limited", "too many attempts, slow down", { retry_after_seconds: Math.ceil(ctx.ttl / 1000) })
     });

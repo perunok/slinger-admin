@@ -31,6 +31,8 @@ export type AppConfig = {
   browserSessionTtlSeconds: number;
   deviceFlowTtlSeconds: number;
   loginRateLimit: { max: number; windowMs: number };
+  /** Where login attempt counters live: per-process memory (default) or shared through PostgreSQL. */
+  rateLimitStore: "memory" | "postgres";
   logLevel: string;
   bootstrapAdmins: BootstrapAdmin[];
 };
@@ -72,6 +74,7 @@ const envSchema = z.object({
   SLINGER_DEVICE_FLOW_TTL: intFromEnv(60, 3600).default(600),
   SLINGER_LOGIN_RATE_MAX: intFromEnv(1, 10_000).default(10),
   SLINGER_LOGIN_RATE_WINDOW_SECONDS: intFromEnv(1, 86_400).default(300),
+  SLINGER_RATE_LIMIT_STORE: z.enum(["memory", "postgres"]).default("memory"),
   SLINGER_LOG_LEVEL: z.string().default("info"),
   SLINGER_ADMIN_BOOTSTRAP: z.string().optional()
 });
@@ -182,6 +185,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, logger: Logger 
     browserSessionTtlSeconds: e.SLINGER_SESSION_TTL,
     deviceFlowTtlSeconds: e.SLINGER_DEVICE_FLOW_TTL,
     loginRateLimit: { max: e.SLINGER_LOGIN_RATE_MAX, windowMs: e.SLINGER_LOGIN_RATE_WINDOW_SECONDS * 1000 },
+    rateLimitStore: e.SLINGER_RATE_LIMIT_STORE,
     logLevel: e.SLINGER_LOG_LEVEL,
     bootstrapAdmins
   };

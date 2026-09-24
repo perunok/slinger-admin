@@ -8,6 +8,7 @@ const alice = person('alice');
 const bob = person('bob');
 const carol = person('carol');
 const dave = person('dave');
+const erin = person('erin');
 const wsName = `Acme ${run}`;
 const wsSlug = `acme-${run}`;
 let wsId = '';
@@ -40,6 +41,29 @@ test('login: wrong password is rejected, correct one shows the overview with rea
   expect(stored.toLowerCase()).not.toContain('csrf');
 });
 
+test('platform health: a 503 with the per-service body shows the breakdown, not "server unavailable"', async ({ page }) => {
+  // The real server answers 503 with exactly this body when its database ping fails but the request was
+  // authenticated (server/test/admin.test.ts covers the real route); a real outage cannot be provoked from here
+  // because authentication itself needs the database, so the response is replayed at the network layer.
+  await page.route('**/api/v1/admin/health', (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ status: 'degraded', services: { api: 'ok', postgres: 'down' }, timestamp: new Date().toISOString() })
+    })
+  );
+  await uiLogin(page, env.admin.email, env.admin.password, '/');
+  const card = page.locator('.card', { hasText: 'Platform health' }).first();
+  await expect(card.getByText('Degraded')).toBeVisible();
+  await expect(card.getByRole('alert')).toContainText('postgres: down');
+  await expect(page.getByRole('heading', { name: 'Services' })).toBeVisible();
+  await expect(page.locator('li', { hasText: 'postgres' }).getByText('Down')).toBeVisible();
+  await expect(page.getByText(/temporarily unavailable/i)).toHaveCount(0);
+  await page.unroute('**/api/v1/admin/health');
+  await page.getByRole('button', { name: 'Refresh' }).click();
+  await expect(page.locator('.card', { hasText: 'Platform health' }).first().getByText('Ok')).toBeVisible();
+});
+
 test('users: create users, change a platform role (super admin) and see it persist', async ({ page }) => {
   await uiLogin(page, env.admin.email, env.admin.password, '/#/users');
   for (const u of [alice, bob]) {
@@ -47,6 +71,7 @@ test('users: create users, change a platform role (super admin) and see it persi
     const dlg = page.getByRole('dialog');
     await dlg.getByLabel('Email').fill(u.email);
     await dlg.getByLabel('Display name').fill(u.display_name);
+    await dlg.getByLabel('Set a password manually').check();
     await dlg.getByLabel('Initial password').fill(u.password);
     await dlg.getByRole('button', { name: 'Create user' }).click();
     await expect(toast(page, 'User created')).toBeVisible();
@@ -57,6 +82,7 @@ test('users: create users, change a platform role (super admin) and see it persi
   await page.getByRole('button', { name: 'Create user' }).click();
   await dlg.getByLabel('Email').fill(alice.email);
   await dlg.getByLabel('Display name').fill('Dup');
+  await dlg.getByLabel('Set a password manually').check();
   await dlg.getByLabel('Initial password').fill(PASSWORD);
   await dlg.getByRole('button', { name: 'Create user' }).click();
   await expect(dlg.getByRole('alert')).toContainText(/already exists/i);
@@ -73,6 +99,62 @@ test('users: create users, change a platform role (super admin) and see it persi
   await expect(page.getByLabel(`Platform role for ${env.admin.email}`)).toHaveCount(0);
   const options = await page.getByLabel(`Platform role for ${alice.email}`).locator('option').allTextContents();
   expect(options).toEqual(['User', 'Platform admin']);
+});
+
+test('users: generated temporary password is shown once; disable revokes sessions, enable restores sign-in', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await uiLogin(page, env.admin.email, env.admin.password, '/#/users');
+  await page.getByRole('button', { name: 'Create user' }).click();
+  const dlg = page.getByRole('dialog');
+  await expect(dlg.getByLabel('Generate a temporary password')).toBeChecked();
+  await expect(dlg.getByLabel('Initial password')).toHaveCount(0);
+  await dlg.getByLabel('Email').fill(erin.email);
+  await dlg.getByLabel('Display name').fill(erin.display_name);
+  await dlg.getByRole('button', { name: 'Create user' }).click();
+  const temp = (await dlg.getByLabel('Temporary password', { exact: true }).textContent())!.trim();
+  expect(temp.length).toBeGreaterThanOrEqual(16);
+  await dlg.getByRole('button', { name: 'Copy password' }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(temp);
+  await dlg.getByRole('button', { name: 'Done' }).click();
+  await expect(page.getByText(temp)).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByText(temp)).toHaveCount(0); // never retrievable again
+  await expect(page.getByRole('row', { name: new RegExp(erin.email) })).toBeVisible();
+
+  // the temporary password really is a working credential (real login), and gives a live session + token
+  const erinApi = await apiLogin(erin.email, temp);
+  expect((await erinApi.ctx.get('/v1/auth/browser/session')).status()).toBe(200);
+
+  // guard rails in the UI: not yourself, and the padmin (platform admin) cannot disable the super admin
+  await expect(page.getByRole('button', { name: `Disable ${env.admin.email}` })).toBeDisabled();
+  await expect(page.getByRole('button', { name: `Disable ${env.admin.email}` })).toHaveAttribute('title', 'You cannot disable your own account');
+
+  // disable with confirmation
+  await page.getByRole('button', { name: `Disable ${erin.email}` }).click();
+  const confirm = page.getByRole('dialog');
+  await expect(confirm.getByText(/signed out everywhere/)).toBeVisible();
+  await confirm.getByRole('button', { name: 'Cancel' }).click();
+  expect((await erinApi.ctx.get('/v1/auth/browser/session')).status()).toBe(200); // cancelling changed nothing
+  await page.getByRole('button', { name: `Disable ${erin.email}` }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Disable user' }).click();
+  await expect(toast(page, `Disabled ${erin.email}`)).toBeVisible();
+  const row = page.getByRole('row', { name: new RegExp(erin.email) });
+  await expect(row.getByText('Disabled', { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('row', { name: new RegExp(erin.email) }).getByText('Disabled', { exact: true })).toBeVisible();
+
+  // the server rejects the existing session and refuses a new sign-in
+  expect((await erinApi.ctx.get('/v1/auth/browser/session')).status()).toBe(401);
+  const relogin = await (await import('@playwright/test')).request.newContext({ baseURL: env.api });
+  expect((await relogin.post('/v1/auth/browser/login', { data: { email: erin.email, password: temp } })).status()).toBe(401);
+
+  // enable again: sign-in works, the old session stays dead
+  await page.getByRole('button', { name: `Enable ${erin.email}` }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Enable user' }).click();
+  await expect(toast(page, `Enabled ${erin.email}`)).toBeVisible();
+  await expect(page.getByRole('row', { name: new RegExp(erin.email) }).getByText('Disabled', { exact: true })).toHaveCount(0);
+  expect((await relogin.post('/v1/auth/browser/login', { data: { email: erin.email, password: temp } })).status()).toBe(200);
+  expect((await erinApi.ctx.get('/v1/auth/browser/session')).status()).toBe(401);
 });
 
 test('workspaces: create, duplicate slug is refused', async ({ page }) => {
@@ -200,6 +282,39 @@ test('hosts: custom domain shows its TXT record (also after reload); re-check wi
   await expect(page.getByRole('row', { name: new RegExp(`acme-${run}.sling.example.test.*Active`) })).toBeVisible();
 });
 
+test('hosts: the owner removes hosts after confirming; non-owners cannot (403); the removal is audited', async ({ page }) => {
+  const shared = `acme-${run}.sling.example.test`;
+  await uiLogin(page, env.admin.email, env.admin.password, `/#/workspaces/${wsId}/hosts`);
+  await expect(page.getByRole('row', { name: new RegExp(`${shared}.*Active`) })).toBeVisible();
+  const hostsApi = async () => (await (await adminApi.ctx.get(`/v1/workspaces/${wsId}/hosts`)).json()).items as Array<{ id: string; host: string }>;
+  const target = (await hostsApi()).find((h) => h.host === shared)!;
+
+  // a plain editor of the workspace is refused by the server (and never sees the tab)
+  const bobApi = await apiLogin(bob.email, bob.password);
+  expect((await apiCall(bobApi, 'DELETE', `/workspaces/${wsId}/hosts/${target.id}`)).status()).toBe(403);
+
+  await page.getByRole('button', { name: `Remove host ${shared}` }).click();
+  const dlg = page.getByRole('dialog');
+  await expect(dlg.getByText(/stop resolving to this workspace/)).toBeVisible();
+  await dlg.getByRole('button', { name: 'Cancel' }).click();
+  expect((await hostsApi()).some((h) => h.host === shared)).toBe(true); // cancel removed nothing
+
+  await page.getByRole('button', { name: `Remove host ${shared}` }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Remove host' }).click();
+  await expect(toast(page, `Removed ${shared}`)).toBeVisible();
+  await expect(page.getByRole('row', { name: new RegExp(shared) })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole('row', { name: new RegExp(shared) })).toHaveCount(0);
+  expect((await hostsApi()).some((h) => h.host === shared)).toBe(false);
+  // the pending custom domain is untouched,
+  await expect(page.getByRole('row', { name: new RegExp(`api-${run}.acme-e2e.test`) }).first()).toBeVisible();
+
+  await page.goto(`/#/workspaces/${wsId}/audit`);
+  await page.getByLabel('Action').selectOption('host.removed');
+  await expect(page.locator('tbody tr')).toHaveCount(1);
+  await expect(page.locator('tbody tr').first()).toContainText(shared);
+});
+
 test('audit logs: platform and workspace views, newest first, actor emails, action filter', async ({ page }) => {
   await uiLogin(page, env.admin.email, env.admin.password, '/#/audit');
   const rows = page.locator('tbody tr');
@@ -263,6 +378,56 @@ test('session expiry: a dead session sends the user to login and back to the pag
   await expect(page.getByRole('button', { name: 'Invite member' })).toBeVisible();
 });
 
+test('workspace settings: owner edits with version handling; a concurrent change shows the conflict; editors cannot', async ({ page }) => {
+  await uiLogin(page, env.admin.email, env.admin.password, `/#/workspaces/${wsId}`);
+  const settings = page.getByRole('region', { name: 'Settings' });
+  await expect(settings).toBeVisible();
+  const current = async () => (await (await adminApi.ctx.get(`/v1/workspaces/${wsId}`)).json()).workspace;
+  const v0 = (await current()).version;
+
+  await settings.getByLabel('Description').fill('Edited in the dashboard');
+  await settings.getByLabel('Visibility').selectOption('internal');
+  await settings.getByRole('button', { name: 'Save settings' }).click();
+  await expect(toast(page, 'Workspace settings saved')).toBeVisible();
+  await expect(page.getByRole('term').filter({ hasText: 'Visibility' }).locator('xpath=following-sibling::dd[1]')).toHaveText('Internal');
+  const saved = await current();
+  expect(saved).toMatchObject({ description: 'Edited in the dashboard', visibility: 'internal', version: v0 + 1, name: wsName });
+  await page.reload();
+  await expect(page.getByRole('region', { name: 'Settings' }).getByLabel('Description')).toHaveValue('Edited in the dashboard');
+
+  // someone else changes the workspace while the form is open -> conflict, nothing is overwritten
+  await page.getByRole('region', { name: 'Settings' }).getByLabel('Name').fill(`${wsName} (mine)`);
+  const theirs = await apiCall(adminApi, 'PATCH', `/workspaces/${wsId}`, { description: 'Changed elsewhere', version: saved.version });
+  expect(theirs.status()).toBe(200);
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  const conflict = page.getByTestId('version-conflict');
+  await expect(conflict).toContainText('Someone else changed this workspace');
+  await expect(conflict).toContainText(`version ${saved.version + 1}`);
+  expect((await current()).name).toBe(wsName);
+  await conflict.getByRole('button', { name: 'Load latest version' }).click();
+  await expect(page.getByTestId('version-conflict')).toHaveCount(0);
+  await expect(page.getByLabel('Description')).toHaveValue('Changed elsewhere');
+  await expect(page.getByLabel('Name')).toHaveValue(wsName);
+  // retry on top of the latest version succeeds; put the name back afterwards so later tests keep their fixture
+  await page.getByLabel('Name').fill(`${wsName} (mine)`);
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: `${wsName} (mine)` })).toBeVisible();
+  await page.getByLabel('Name').fill(wsName);
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: wsName, exact: true })).toBeVisible();
+  await expect(page.getByLabel('Name')).toHaveValue(wsName);
+  // validation happens before any request
+  await page.getByLabel('Name').fill('');
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  await expect(page.getByText('Name is required.')).toBeVisible();
+  await page.getByLabel('Name').fill(wsName);
+
+  // the change is in the workspace audit trail
+  await page.goto(`/#/workspaces/${wsId}/audit`);
+  await page.getByLabel('Action').selectOption('workspace.updated');
+  await expect(page.locator('tbody tr').first()).toContainText(env.admin.email);
+});
+
 test('role-based UI: a plain workspace editor and a platform admin see only what the server allows', async ({ page }) => {
   // bob: editor in the workspace, no platform role
   await uiLogin(page, bob.email, bob.password, '/');
@@ -274,6 +439,9 @@ test('role-based UI: a plain workspace editor and a platform admin see only what
   const tabs = page.getByRole('navigation', { name: 'Workspace sections' }).getByRole('link');
   await expect(tabs).toHaveText(['Overview', 'Members']);
   await expect(page.getByRole('button', { name: 'Delete workspace' })).toBeDisabled();
+  await expect(page.getByRole('region', { name: 'Settings' })).toHaveCount(0); // settings are owner / platform admin only
+  const denied = await apiCall(await apiLogin(bob.email, bob.password), 'PATCH', `/workspaces/${wsId}`, { name: 'hax', version: 1 });
+  expect(denied.status()).toBe(403);
   await page.goto('/#/users');
   await expect(page.getByText('Not available for your role')).toBeVisible();
   await page.getByRole('button', { name: 'Sign out' }).click();
@@ -283,10 +451,17 @@ test('role-based UI: a plain workspace editor and a platform admin see only what
   await uiLogin(page, env.padmin.email, env.padmin.password, `/#/workspaces/${wsId}/hosts`);
   await expect(page.getByText('Platform access')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Add host' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Remove host / }).first()).toBeVisible();
   await page.goto('/#/users');
   await expect(page.getByRole('button', { name: 'Create user' })).toBeVisible();
   await expect(page.locator('tbody select')).toHaveCount(0);
+  // may disable ordinary users, but not the super admin (reason in the tooltip) and not itself
+  await expect(page.getByRole('button', { name: `Disable ${erin.email}` })).toBeEnabled();
+  await expect(page.getByRole('button', { name: `Disable ${env.admin.email}` })).toBeDisabled();
+  await expect(page.getByRole('button', { name: `Disable ${env.admin.email}` })).toHaveAttribute('title', 'The super admin cannot be disabled');
+  await expect(page.getByRole('button', { name: `Disable ${env.padmin.email}` })).toBeDisabled();
   await page.goto(`/#/workspaces/${wsId}`);
+  await expect(page.getByRole('region', { name: 'Settings' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Delete workspace' })).toBeDisabled();
   const del = await apiCall(await apiLogin(env.padmin.email, env.padmin.password), 'DELETE', `/workspaces/${wsId}`);
   expect(del.status()).toBe(403);
@@ -301,7 +476,9 @@ test('workspace delete needs the typed name; the audit trail survives the deleti
   await dlg.getByLabel(/Type .* to confirm/).fill(wsName);
   await confirm.click();
   await expect(page).toHaveURL(/#\/workspaces$/);
-  await expect(page.getByText(wsName)).toHaveCount(0);
+  // Assert on the table only: the "Deleted <name>" success toast also contains the name and lingers for ~4.5s,
+  // which used to make this line (getByText(wsName) count 0) wait for the toast to time out.
+  await expect(page.locator('tbody').getByText(wsName)).toHaveCount(0);
   expect((await adminApi.ctx.get(`/v1/workspaces/${wsId}`)).status()).toBe(404);
 
   await page.goto('/#/audit');

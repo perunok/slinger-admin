@@ -173,3 +173,23 @@ describe('endpoint paths', () => {
     expect(page.page).toEqual({ next_cursor: null, has_more: false });
   });
 });
+
+describe('HttpClient acceptStatus', () => {
+  const health = z.object({ status: z.string(), services: z.record(z.string(), z.string()) });
+  const body = { status: 'degraded', services: { api: 'ok', postgres: 'down' } };
+
+  it('returns a non-2xx body that matches the schema when the status is accepted', async () => {
+    const { client } = make(async () => ok(body, 503));
+    await expect(client.request('GET', '/h', { schema: health, acceptStatus: [503] })).resolves.toEqual(body);
+  });
+
+  it('still throws for accepted statuses whose body does not match, and for other statuses', async () => {
+    const proxy = make(async () => new Response('<html>503</html>', { status: 503 }));
+    const e1 = await proxy.client.request('GET', '/h', { schema: health, acceptStatus: [503] }).catch((x) => x);
+    expect(e1).toMatchObject({ status: 503, code: 'http_503' });
+    const envelope = make(async () => ok({ error: { code: 'internal_error', message: 'boom' } }, 503));
+    expect(await envelope.client.request('GET', '/h', { schema: health, acceptStatus: [503] }).catch((x) => x)).toMatchObject({ code: 'internal_error' });
+    const other = make(async () => ok(body, 500));
+    expect(await other.client.request('GET', '/h', { schema: health, acceptStatus: [503] }).catch((x) => x)).toBeInstanceOf(ApiError);
+  });
+});

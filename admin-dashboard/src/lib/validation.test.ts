@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasErrors, slugify, validateHost, validateInvite, validateLogin, validateNewUser, validateNewWorkspace } from './validation';
+import { hasErrors, slugify, validateHost, validateInvite, validateLogin, validateNewUser, validateNewWorkspace, validateWorkspaceSettings } from './validation';
 
 describe('validation', () => {
   it('login', () => {
@@ -11,6 +11,16 @@ describe('validation', () => {
     const e = validateNewUser({ email: 'bad', display_name: ' ', password: 'short' });
     expect(Object.keys(e).sort()).toEqual(['display_name', 'email', 'password']);
     expect(hasErrors(validateNewUser({ email: 'a@b.co', display_name: 'A', password: 'x'.repeat(12) }))).toBe(false);
+  });
+  it('new user with a generated password needs no password', () => {
+    expect(hasErrors(validateNewUser({ email: 'a@b.co', display_name: 'A', password: '', generate: true }))).toBe(false);
+    expect(Object.keys(validateNewUser({ email: 'x', display_name: '', password: '', generate: true })).sort()).toEqual(['display_name', 'email']);
+  });
+  it('workspace settings', () => {
+    expect(validateWorkspaceSettings({ name: ' ', description: '' }).name).toBeDefined();
+    expect(validateWorkspaceSettings({ name: 'x'.repeat(121), description: '' }).name).toMatch(/120/);
+    expect(validateWorkspaceSettings({ name: 'ok', description: 'd'.repeat(2001) }).description).toMatch(/2000/);
+    expect(validateWorkspaceSettings({ name: 'ok', description: '' })).toEqual({});
   });
   it('new workspace slug rules', () => {
     const base = { name: 'N', description: '' };

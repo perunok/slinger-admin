@@ -8,6 +8,9 @@ export type PlatformRole = z.infer<typeof platformRoleSchema>;
 export const workspaceRoleSchema = z.enum(['owner', 'admin', 'editor', 'viewer']);
 export type WorkspaceRole = z.infer<typeof workspaceRoleSchema>;
 
+export type WorkspaceVisibility = 'private' | 'internal';
+export type DefaultRequestRole = 'viewer' | 'editor';
+
 export const userSchema = z.object({
   id: z.string(),
   email: z.string(),

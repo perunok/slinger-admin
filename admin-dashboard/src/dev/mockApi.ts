@@ -9,12 +9,13 @@
  *   owner@example.com   user (owner of "Acme Core API")
  *   editor@example.com  user (editor in "Acme Core API")
  *
- * Dev hooks on `window.__mock`: expireSession(), failNext(status, body?), latency(ms), reset().
+ * Dev hooks on `window.__mock`: expireSession(), failNext(status, body?), latency(ms), reset(), healthDown(bool)
+ * (GET /admin/health then answers 503 with postgres: down), touchWorkspace(id) (bumps its version, to provoke a settings conflict).
  */
 import type { HttpClient } from '../lib/api/client';
 
 type Json = Record<string, unknown>;
-interface U { id: string; email: string; display_name: string; platform_role: 'super_admin' | 'platform_admin' | 'user'; password: string; created_at: string; updated_at: string }
+interface U { disabled?: boolean; id: string; email: string; display_name: string; platform_role: 'super_admin' | 'platform_admin' | 'user'; password: string; created_at: string; updated_at: string }
 interface W { id: string; slug: string; name: string; description: string; owner_user_id: string; visibility: string; host_mode: string; created_at: string; updated_at: string; version: number }
 interface M { id: string; workspace_id: string; user_id: string; role: string; status: string; joined_at: string; created_at: string; updated_at: string; version: number }
 interface I { id: string; workspace_id: string; email: string; role: string; status: string; expires_at: string; created_at: string; updated_at: string; version: number }
@@ -91,12 +92,15 @@ export function installMockApi(client: HttpClient) {
   let csrf: string | null = null;
   let latency = 120;
   let failNext: { status: number; body?: string } | null = null;
+  let dbDown = false;
 
   const ctl = {
     expireSession() { sessionUser = null; csrf = null; },
     failNext(status: number, body?: string) { failNext = { status, body }; },
     latency(ms: number) { latency = ms; },
-    reset() { db = seed(); sessionUser = null; csrf = null; },
+    reset() { db = seed(); sessionUser = null; csrf = null; dbDown = false; },
+    healthDown(v = true) { dbDown = v; },
+    touchWorkspace(id: string) { const w = db.workspaces.find((x) => x.id === id); if (w) { w.version += 1; w.updated_at = now(); } },
   };
   (window as unknown as { __mock: typeof ctl }).__mock = ctl;
 
@@ -104,7 +108,7 @@ export function installMockApi(client: HttpClient) {
   const me = () => db.users.find((u) => u.id === sessionUser) ?? null;
   const isAdmin = (u: U | null) => !!u && u.platform_role !== 'user';
   const pub = (u: U) => ({ id: u.id, email: u.email, display_name: u.display_name, platform_role: u.platform_role });
-  const adminPub = (u: U) => ({ ...pub(u), disabled: false, created_at: u.created_at, updated_at: u.updated_at });
+  const adminPub = (u: U) => ({ ...pub(u), disabled: !!u.disabled, created_at: u.created_at, updated_at: u.updated_at });
   const audit = (workspace_id: string | null, action: string, resource_type: string, resource_id: string, details: Json = {}) => {
     const u = me()!;
     db.audit.unshift({ id: uid(), workspace_id, actor_user_id: u.id, actor_email: u.email, action, resource_type, resource_id, request_id: crypto.randomUUID(), details, created_at: now() });
@@ -152,10 +156,10 @@ export function installMockApi(client: HttpClient) {
     if (path.startsWith('/admin/')) {
       if (!isAdmin(u)) throw new HttpError(403, 'forbidden', 'Platform admin access required.');
       if (method === 'GET' && path === '/admin/health') {
-        return { status: 200, json: { status: 'ok', services: { api: 'ok', postgres: 'ok' }, timestamp: now() } };
+        return { status: dbDown ? 503 : 200, json: { status: dbDown ? 'degraded' : 'ok', services: { api: 'ok', postgres: dbDown ? 'down' : 'ok' }, timestamp: now() } };
       }
       if (method === 'GET' && path === '/admin/stats') {
-        return { status: 200, json: { users: db.users.length, platform_admins: db.users.filter((x) => x.platform_role !== 'user').length, disabled_users: 0, workspaces: db.workspaces.length, memberships: db.members.length, pending_invites: db.invites.filter((i) => i.status === 'pending').length, pending_join_requests: db.joins.filter((j) => j.status === 'pending').length, collections: 0, requests: 0, environments: 0, active_sessions: 1, audit_logs: db.audit.length } };
+        return { status: 200, json: { users: db.users.length, platform_admins: db.users.filter((x) => x.platform_role !== 'user').length, disabled_users: db.users.filter((x) => x.disabled).length, workspaces: db.workspaces.length, memberships: db.members.length, pending_invites: db.invites.filter((i) => i.status === 'pending').length, pending_join_requests: db.joins.filter((j) => j.status === 'pending').length, collections: 0, requests: 0, environments: 0, active_sessions: 1, audit_logs: db.audit.length } };
       }
       if (method === 'GET' && path === '/admin/users') {
         const q = (params.get('q') ?? '').toLowerCase();
@@ -169,22 +173,28 @@ export function installMockApi(client: HttpClient) {
         if (db.users.some((x) => x.email.toLowerCase() === String(body.email).toLowerCase())) {
           throw new HttpError(409, 'conflict', 'a resource with these unique values already exists');
         }
-        const nu: U = { id: uid(), email: String(body.email), display_name: String(body.display_name), platform_role: role as U['platform_role'], password: pw ?? 'generated-temp-pass', created_at: now(), updated_at: now() };
+        const tempPw = Array.from(crypto.getRandomValues(new Uint8Array(15)), (b) => 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 56]).join('');
+        const nu: U = { id: uid(), email: String(body.email), display_name: String(body.display_name), platform_role: role as U['platform_role'], password: pw ?? tempPw, created_at: now(), updated_at: now() };
         db.users.unshift(nu);
         audit(null, 'admin.user_created', 'user', nu.id, { email: nu.email, platform_role: role });
-        return { status: 201, json: { user: adminPub(nu), temporary_password: pw === null ? 'generated-temp-pass' : null } };
+        return { status: 201, json: { user: adminPub(nu), temporary_password: pw === null ? tempPw : null } };
       }
       const um = path.match(/^\/admin\/users\/([^/]+)$/);
       if (method === 'PATCH' && um) {
-        if (u.platform_role !== 'super_admin') throw new HttpError(403, 'forbidden', 'Only a super admin can change platform roles.');
         const t = db.users.find((x) => x.id === um[1]);
         if (!t) throw new HttpError(404, 'not_found', 'user not found');
-        if (body.platform_role === 'super_admin') throw new HttpError(400, 'invalid_request', 'request validation failed', { issues: [{ path: 'platform_role', message: "Invalid enum value. Expected 'platform_admin' | 'user'" }] });
-        if (t.platform_role === 'super_admin') throw new HttpError(403, 'forbidden', "the super admin's role cannot be changed");
-        if (t.email === 'person7@example.com') throw new HttpError(500, 'internal_error', 'Simulated server failure (person7).', {});
-        t.platform_role = body.platform_role as U['platform_role'];
+        if (t.platform_role !== 'user' && u.platform_role !== 'super_admin') throw new HttpError(403, 'forbidden', 'modifying a platform admin requires the super_admin role');
+        if (body.platform_role !== undefined) {
+          if (u.platform_role !== 'super_admin') throw new HttpError(403, 'forbidden', 'Only a super admin can change platform roles.');
+          if (body.platform_role === 'super_admin') throw new HttpError(400, 'invalid_request', 'request validation failed', { issues: [{ path: 'platform_role', message: "Invalid enum value. Expected 'platform_admin' | 'user'" }] });
+          if (t.platform_role === 'super_admin') throw new HttpError(403, 'forbidden', "the super admin's role cannot be changed");
+          if (t.email === 'person7@example.com') throw new HttpError(500, 'internal_error', 'Simulated server failure (person7).', {});
+          t.platform_role = body.platform_role as U['platform_role'];
+        }
+        if (body.disabled === true && t.id === u.id) throw new HttpError(403, 'forbidden', 'you cannot disable your own account');
+        if (body.disabled !== undefined) t.disabled = body.disabled === true;
         t.updated_at = now();
-        audit(null, 'admin.user_role_changed', 'user', t.id, { email: t.email, changes: body });
+        audit(null, body.platform_role !== undefined ? 'admin.user_role_changed' : 'admin.user_updated', 'user', t.id, { email: t.email, changes: body });
         return { status: 200, json: { user: adminPub(t) } };
       }
       if (method === 'GET' && path === '/admin/workspaces') {
@@ -221,6 +231,17 @@ export function installMockApi(client: HttpClient) {
         db.workspaces = db.workspaces.filter((x) => x.id !== wid);
         audit(wid, 'workspace.deleted', 'workspace', wid, { name: w.name });
         return { status: 200, json: { ok: true } };
+      }
+      if (rest === '' && method === 'PATCH') {
+        if (!canManage(u, role)) throw new HttpError(403, 'workspace_access_denied', 'You do not have access to this workspace.');
+        if (body.version !== w.version) throw new HttpError(409, 'version_mismatch', 'resource was modified by someone else; refetch and retry', { current_version: w.version });
+        if (typeof body.name === 'string') w.name = body.name;
+        if (typeof body.description === 'string') w.description = body.description;
+        if (typeof body.visibility === 'string') w.visibility = body.visibility;
+        if (typeof body.default_role_for_requests === 'string') (w as W & { default_role_for_requests?: string }).default_role_for_requests = body.default_role_for_requests;
+        w.version += 1; w.updated_at = now();
+        audit(wid, 'workspace.updated', 'workspace', wid, { fields: Object.keys(body).filter((k) => k !== 'version') });
+        return { status: 200, json: { workspace: w } };
       }
       if (rest === 'members' && method === 'GET') {
         const items = db.members.filter((m) => m.workspace_id === wid).map((m) => { const mu = db.users.find((x) => x.id === m.user_id)!; return { ...m, email: mu.email, display_name: mu.display_name }; });
@@ -310,6 +331,15 @@ export function installMockApi(client: HttpClient) {
         h.checks += 1;
         if (h.checks >= 2) { h.status = 'active'; h.tls_status = 'ready'; h.updated_at = now(); }
         return { status: 200, json: { host: hostView(h), verified: h.status === 'active' } };
+      }
+      const hd = rest.match(/^hosts\/([^/]+)$/);
+      if (hd && method === 'DELETE') {
+        if (!canManage(u, role)) throw new HttpError(403, 'forbidden', 'Only the owner can manage hosts.');
+        const h = db.hosts.find((x) => x.id === hd[1] && x.workspace_id === wid);
+        if (!h) throw new HttpError(404, 'not_found', 'host not found');
+        db.hosts = db.hosts.filter((x) => x.id !== h.id);
+        audit(wid, 'host.removed', 'host', h.id, { host: h.host });
+        return { status: 200, json: { ok: true } };
       }
       if (rest === 'audit-logs' && method === 'GET') {
         if (!canModerate(u, role)) throw new HttpError(403, 'forbidden', 'Not allowed.');

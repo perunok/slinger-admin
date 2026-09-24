@@ -30,7 +30,7 @@
   let errors = $state<Errors<'email'>>({});
   const createAction = new Action();
   /** The raw token is only returned once; it lives only in this component's memory. */
-  let issued = $state<{ email: string; token: string | undefined } | null>(null);
+  let issued = $state<{ id: string; email: string; token: string | undefined } | null>(null);
 
   function openCreate() {
     form = { email: '', role: 'viewer' };
@@ -49,7 +49,7 @@
     if (res?.ok) {
       pager.prepend(res.value.invite);
       creating = false;
-      issued = { email: res.value.invite.email, token: res.value.invite_token };
+      issued = { id: res.value.invite.id, email: res.value.invite.email, token: res.value.invite_token };
     }
   }
 
@@ -143,7 +143,14 @@
         <div class="banner warning" role="status">
           Copy this token now. It is shown only once and cannot be retrieved later.
         </div>
+        <p class="small muted">The invitee needs both values to accept: <code>POST /v1/invites/&lt;invite id&gt;/accept</code> with <code>{'{ "invite_token": … }'}</code>, signed in as {issued.email}.</p>
         <div class="token-box">
+          <span class="small muted">Invite ID</span>
+          <code class="token" data-testid="invite-id">{issued.id}</code>
+          <CopyButton value={issued.id} label="Copy invite ID" />
+        </div>
+        <div class="token-box">
+          <span class="small muted">Token</span>
           <code class="token" data-testid="invite-token">{issued.token}</code>
           <CopyButton value={issued.token} label="Copy token" />
         </div>

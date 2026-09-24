@@ -1,18 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '../lib/api';
-  import type { AuditLog, Health } from '../lib/api/schemas';
+  import type { AuditLog, Health, Stats } from '../lib/api/schemas';
   import { errorMessage } from '../lib/api/errors';
   import { hashHref, paths } from '../lib/state/router.svelte';
   import { formatDate, humanize, statusTone } from '../lib/format';
   import Badge from '../lib/components/Badge.svelte';
   import Button from '../lib/components/Button.svelte';
 
-  const COUNT_LIMIT = 100;
   type Load<T> = { state: 'loading' } | { state: 'error'; message: string } | { state: 'ready'; value: T };
 
-  let users = $state<Load<{ count: number; more: boolean }>>({ state: 'loading' });
-  let workspaces = $state<Load<{ count: number; more: boolean }>>({ state: 'loading' });
+  let stats = $state<Load<Stats>>({ state: 'loading' });
   let health = $state<Load<Health>>({ state: 'loading' });
   let recent = $state<Load<AuditLog[]>>({ state: 'loading' });
 
@@ -25,22 +23,12 @@
     }
   }
 
-  const loadUsers = () =>
-    into((l) => (users = l), async () => {
-      const p = await api.admin.users({ limit: COUNT_LIMIT });
-      return { count: p.items.length, more: p.page.has_more };
-    });
-  const loadWorkspaces = () =>
-    into((l) => (workspaces = l), async () => {
-      const p = await api.admin.workspaces({ limit: COUNT_LIMIT });
-      return { count: p.items.length, more: p.page.has_more };
-    });
+  const loadStats = () => into((l) => (stats = l), () => api.admin.stats());
   const loadHealth = () => into((l) => (health = l), () => api.admin.health());
   const loadRecent = () => into((l) => (recent = l), async () => (await api.admin.auditLogs({ limit: 5 })).items);
 
   function refresh() {
-    void loadUsers();
-    void loadWorkspaces();
+    void loadStats();
     void loadHealth();
     void loadRecent();
   }
@@ -57,16 +45,17 @@
 
 <div class="stack">
   <div class="grid-stats">
-    {#each [{ title: 'Users', data: users, href: paths.users() }, { title: 'Workspaces', data: workspaces, href: paths.workspaces() }] as s (s.title)}
+    {#each [{ title: 'Users', pick: (x: Stats) => x.users, href: paths.users() }, { title: 'Workspaces', pick: (x: Stats) => x.workspaces, href: paths.workspaces() }, { title: 'Active sessions', pick: (x: Stats) => x.active_sessions }, { title: 'Pending invites', pick: (x: Stats) => x.pending_invites }, { title: 'Pending join requests', pick: (x: Stats) => x.pending_join_requests }] as s (s.title)}
       <div class="card stat">
         <div class="muted small">{s.title}</div>
-        {#if s.data.state === 'loading'}
+        {#if stats.state === 'loading'}
           <div class="value" aria-busy="true">…</div>
-        {:else if s.data.state === 'error'}
-          <div class="field-error" role="alert">{s.data.message}</div>
+        {:else if stats.state === 'error'}
+          <div class="field-error" role="alert">{stats.message}</div>
+          <Button size="sm" onclick={loadStats}>Retry</Button>
         {:else}
-          <div class="value">{s.data.value.count}{s.data.value.more ? '+' : ''}</div>
-          <a href={hashHref(s.href)} class="small">View {s.title.toLowerCase()}</a>
+          <div class="value">{s.pick(stats.value)}</div>
+          {#if s.href}<a href={hashHref(s.href)} class="small">View {s.title.toLowerCase()}</a>{/if}
         {/if}
       </div>
     {/each}
@@ -111,7 +100,7 @@
       <ul class="recent">
         {#each recent.value as log (log.id)}
           <li>
-            <strong>{humanize(log.action)}</strong>
+            <strong>{humanize(log.action.replace('.', ' '))}</strong>
             <span class="muted">{log.actor_email ?? log.actor_user_id ?? 'system'} · {formatDate(log.created_at)}</span>
           </li>
         {/each}

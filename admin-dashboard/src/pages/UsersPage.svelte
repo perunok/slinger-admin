@@ -125,11 +125,11 @@
           {#each visible as u (u.id)}
             <tr>
               <td>
-                <div><strong>{u.display_name || u.email}</strong>{#if u.id === me?.id} <Badge tone="info" text="You" />{/if}</div>
+                <div><strong>{u.display_name || u.email}</strong>{#if u.id === me?.id} <Badge tone="info" text="You" />{/if}{#if u.disabled} <Badge tone="danger" text="Disabled" />{/if}</div>
                 {#if u.display_name}<div class="muted small">{u.email}</div>{/if}
               </td>
               <td>
-                {#if canChangeRole && u.id !== me?.id}
+                {#if canChangeRole && u.id !== me?.id && u.platform_role !== 'super_admin'}
                   <label class="sr-only" for="role-{u.id}">Platform role for {u.email}</label>
                   <select
                     id="role-{u.id}"
@@ -139,7 +139,7 @@
                     aria-busy={roleBusy[u.id]}
                     onchange={(e) => changeRole(u, e.currentTarget)}
                   >
-                    {#each ['user', 'platform_admin', 'super_admin'] as r (r)}
+                    {#each creatable as r (r)}
                       <option value={r}>{platformRoleLabel[r as PlatformRole]}</option>
                     {/each}
                   </select>

@@ -70,9 +70,9 @@
     checking[h.id] = true;
     try {
       const res = await api.workspaces.verifyHost(id, h.id);
-      if (res.verification) verifications[h.id] = res.verification;
-      pager.patch((x) => x.id === h.id, () => res.host);
-      if (needsVerification(res.host)) toasts.info('DNS record not found yet. DNS changes can take a while to propagate.');
+      // The verify response has no `verification`; the record we already have (from add / the list) stays valid.
+      pager.patch((x) => x.id === h.id, (x) => ({ ...res.host, verification: res.verified ? null : (x.verification ?? null) }));
+      if (!res.verified) toasts.info('DNS record not found yet. DNS changes can take a while to propagate.');
       else toasts.success(`${h.host} is verified`);
     } catch (e) {
       if (!(e instanceof ApiError && e.kind === 'unauthenticated')) toasts.error(errorMessage(e));

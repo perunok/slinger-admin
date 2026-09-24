@@ -9,7 +9,7 @@ declare global {
 /**
  * Resolves the API base URL (the prefix in front of `/v1`).
  *  - Runtime config (`/runtime-config.js`, written by entrypoint.sh) wins.
- *  - In dev builds only, falls back to VITE_API_BASE_URL then http://localhost:8080.
+ *  - In dev builds only, falls back to VITE_API_BASE_URL then `/api` (the Vite dev server proxies it to the API).
  *  - In production a missing/invalid value is an error; we never guess.
  */
 export function resolveApiConfig(opts: {
@@ -26,7 +26,7 @@ export function resolveApiConfig(opts: {
     }
     return validate(runtime.trim());
   }
-  if (opts.dev) return validate(opts.buildTime?.trim() || 'http://localhost:8080');
+  if (opts.dev) return validate(opts.buildTime?.trim() || '/api');
   return {
     ok: false,
     reason:

@@ -13,6 +13,8 @@ export const userSchema = z.object({
   email: z.string(),
   display_name: z.string().nullish(),
   platform_role: platformRoleSchema,
+  /** Only on admin views (`/admin/users`). */
+  disabled: z.boolean().optional(),
   created_at: z.string().optional(),
   updated_at: z.string().optional(),
 });
@@ -23,15 +25,11 @@ export const loginResponseSchema = z.object({
   csrf_token: z.string().min(1),
 });
 
-export const meResponseSchema = z.object({
+/** POST /v1/admin/users. `temporary_password` is only set when the request omitted `password`. */
+export const createUserResponseSchema = z.object({
   user: userSchema,
-  workspace_memberships: z
-    .array(z.object({ workspace_id: z.string(), role: workspaceRoleSchema }))
-    .default([]),
-  /** Assumed: returned when the request is cookie-authenticated so a page reload can restore CSRF. */
-  csrf_token: z.string().optional(),
+  temporary_password: z.string().nullish(),
 });
-export type MeResponse = z.infer<typeof meResponseSchema>;
 
 export const workspaceSchema = z.object({
   id: z.string(),
@@ -41,6 +39,9 @@ export const workspaceSchema = z.object({
   owner_user_id: z.string().optional(),
   visibility: z.string().optional(),
   host_mode: z.string().optional(),
+  default_role_for_requests: z.string().optional(),
+  /** Only on `/admin/workspaces` items. */
+  member_count: z.number().optional(),
   /** Present on the non-admin list (caller's role). */
   role: workspaceRoleSchema.nullish(),
   created_at: z.string().optional(),
@@ -76,6 +77,7 @@ export const inviteSchema = z.object({
   email: z.string(),
   role: workspaceRoleSchema,
   status: z.string(),
+  invited_by_user_id: z.string().nullish(),
   expires_at: z.string().nullish(),
   created_at: z.string().optional(),
   updated_at: z.string().optional(),
@@ -121,7 +123,7 @@ export const hostSchema = z.object({
   created_at: z.string().optional(),
   updated_at: z.string().optional(),
   version: z.number().default(1),
-  /** Assumed optional on list items so pending hosts can show instructions after a reload. */
+  /** Present on list items for pending hosts, so the TXT record survives a reload. */
   verification: verificationSchema.nullish(),
 });
 export type Host = z.infer<typeof hostSchema>;
@@ -132,18 +134,42 @@ export const hostWithVerificationSchema = z.object({
 });
 export type HostWithVerification = z.infer<typeof hostWithVerificationSchema>;
 
+/** POST .../hosts/{id}/verify: `verified` says whether the DNS TXT record was found (the host is then active). */
+export const verifyHostResponseSchema = z.object({
+  host: hostSchema,
+  verified: z.boolean(),
+});
+
 export const auditLogSchema = z.object({
   id: z.string(),
   workspace_id: z.string().nullish(),
   actor_user_id: z.string().nullish(),
   actor_email: z.string().nullish(),
+  /** Dotted names such as `member.role_changed`, `invite.created`, `admin.user_created`. */
   action: z.string(),
-  target_type: z.string().nullish(),
-  target_id: z.string().nullish(),
-  metadata: z.record(z.string(), z.unknown()).nullish(),
+  resource_type: z.string().nullish(),
+  resource_id: z.string().nullish(),
+  request_id: z.string().nullish(),
+  details: z.record(z.string(), z.unknown()).nullish(),
   created_at: z.string(),
 });
 export type AuditLog = z.infer<typeof auditLogSchema>;
+
+export const statsSchema = z.object({
+  users: z.number(),
+  platform_admins: z.number(),
+  disabled_users: z.number(),
+  workspaces: z.number(),
+  memberships: z.number(),
+  pending_invites: z.number(),
+  pending_join_requests: z.number(),
+  collections: z.number(),
+  requests: z.number(),
+  environments: z.number(),
+  active_sessions: z.number(),
+  audit_logs: z.number(),
+});
+export type Stats = z.infer<typeof statsSchema>;
 
 export const healthSchema = z.object({
   status: z.string(),

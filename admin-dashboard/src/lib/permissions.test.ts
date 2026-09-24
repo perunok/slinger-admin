@@ -8,7 +8,7 @@ describe('authorization matrix', () => {
     expect(p.canUseAdminRoutes('user')).toBe(false);
     expect(p.canChangePlatformRole('super_admin')).toBe(true);
     expect(p.canChangePlatformRole('platform_admin')).toBe(false);
-    expect(p.assignablePlatformRoles('super_admin')).toEqual(['user', 'platform_admin', 'super_admin']);
+    expect(p.assignablePlatformRoles('super_admin')).toEqual(['user', 'platform_admin']);
     expect(p.assignablePlatformRoles('platform_admin')).toEqual(['user']);
     expect(p.assignablePlatformRoles('user')).toEqual([]);
   });
@@ -24,6 +24,15 @@ describe('authorization matrix', () => {
     expect(p.canManageMembers('user', 'admin')).toBe(false);
     expect(p.canManageMembers('platform_admin', null)).toBe(true);
     expect(p.canManageHosts('user', 'editor')).toBe(false);
+  });
+  it('hosts tab is owner-only and workspace audit log owner/admin only (server routes)', () => {
+    expect(p.canViewHosts('user', 'owner')).toBe(true);
+    expect(p.canViewHosts('user', 'admin')).toBe(false);
+    expect(p.canViewHosts('platform_admin', null)).toBe(true);
+    expect(p.canViewWorkspaceAudit('user', 'admin')).toBe(true);
+    expect(p.canViewWorkspaceAudit('user', 'editor')).toBe(false);
+    expect(p.canViewWorkspaceAudit('user', 'viewer')).toBe(false);
+    expect(p.canViewWorkspaceAudit('super_admin', null)).toBe(true);
   });
   it('delete workspace: super admin or owner (not platform_admin, not workspace admin)', () => {
     expect(p.canDeleteWorkspace('super_admin', null)).toBe(true);

@@ -19,9 +19,9 @@ describe('resolveApiConfig', () => {
     expect(resolveApiConfig({ runtime: 42, dev: false }).ok).toBe(false);
     expect(resolveApiConfig({ runtime: 'api.example.com', dev: false }).ok).toBe(false);
   });
-  it('dev builds fall back to VITE_API_BASE_URL then localhost:8080', () => {
+  it('dev builds fall back to VITE_API_BASE_URL then the /api dev proxy', () => {
     expect(resolveApiConfig({ runtime: undefined, buildTime: '/dev-api', dev: true })).toEqual({ ok: true, baseUrl: '/dev-api' });
-    expect(resolveApiConfig({ runtime: undefined, dev: true })).toEqual({ ok: true, baseUrl: 'http://localhost:8080' });
+    expect(resolveApiConfig({ runtime: undefined, dev: true })).toEqual({ ok: true, baseUrl: '/api' });
   });
   it('mock mode needs no base url', () => {
     expect(resolveApiConfig({ runtime: undefined, dev: false, mock: true }).ok).toBe(true);

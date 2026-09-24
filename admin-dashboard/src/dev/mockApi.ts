@@ -20,7 +20,7 @@ interface M { id: string; workspace_id: string; user_id: string; role: string; s
 interface I { id: string; workspace_id: string; email: string; role: string; status: string; expires_at: string; created_at: string; updated_at: string; version: number }
 interface J { id: string; workspace_id: string; requester_user_id: string; message: string; status: string; requested_role: string; created_at: string; updated_at: string; version: number }
 interface H { id: string; workspace_id: string; host: string; kind: string; status: string; tls_status: string; created_at: string; updated_at: string; version: number; token: string; checks: number }
-interface A { id: string; workspace_id: string | null; actor_user_id: string; actor_email: string; action: string; target_type: string; target_id: string; metadata: Json; created_at: string }
+interface A { id: string; workspace_id: string | null; actor_user_id: string; actor_email: string; action: string; resource_type: string; resource_id: string; request_id: string; details: Json; created_at: string }
 
 const PASSWORD = 'password-12345';
 const iso = (minsAgo: number) => new Date(Date.now() - minsAgo * 60_000).toISOString();
@@ -72,11 +72,11 @@ function seed(): Db {
     { id: uid(), workspace_id: acme.id, host: 'acme.sling.example.com', kind: 'dedicated_subdomain', status: 'active', tls_status: 'ready', created_at: iso(9000), updated_at: iso(9000), version: 1, token: 'x', checks: 9 },
     { id: uid(), workspace_id: acme.id, host: 'api.acme-corp.com', kind: 'custom_domain', status: 'pending_verification', tls_status: 'pending', created_at: iso(500), updated_at: iso(500), version: 1, token: 'verify-0197acme', checks: 0 },
   ];
-  const actions = ['invite_sent', 'role_changed', 'member_removed', 'host_added', 'workspace_deleted', 'join_request_approved'];
+  const actions = ['invite.created', 'member.role_changed', 'member.removed', 'host.added', 'workspace.updated', 'join_request.approved'];
   const audit: A[] = [];
   for (let n = 0; n < 47; n++) {
     const wsId = n % 3 === 0 ? acme.id : workspaces[1 + (n % 5)]!.id;
-    audit.push({ id: uid(), workspace_id: wsId, actor_user_id: sup.id, actor_email: sup.email, action: actions[n % actions.length]!, target_type: 'member', target_id: users[5 + (n % 20)]!.id, metadata: n % 2 ? { role: 'editor' } : {}, created_at: iso(n * 37) });
+    audit.push({ id: uid(), workspace_id: wsId, actor_user_id: sup.id, actor_email: sup.email, action: actions[n % actions.length]!, resource_type: 'membership', resource_id: users[5 + (n % 20)]!.id, request_id: `req-${n}`, details: n % 2 ? { to: 'editor' } : {}, created_at: iso(n * 37) });
   }
   return { users, workspaces, members, invites, joins, hosts, audit };
 }
@@ -103,13 +103,16 @@ export function installMockApi(client: HttpClient) {
   const now = () => new Date().toISOString();
   const me = () => db.users.find((u) => u.id === sessionUser) ?? null;
   const isAdmin = (u: U | null) => !!u && u.platform_role !== 'user';
-  const pub = (u: U) => ({ id: u.id, email: u.email, display_name: u.display_name, platform_role: u.platform_role, created_at: u.created_at, updated_at: u.updated_at });
-  const audit = (workspace_id: string | null, action: string, target_type: string, target_id: string, metadata: Json = {}) => {
+  const pub = (u: U) => ({ id: u.id, email: u.email, display_name: u.display_name, platform_role: u.platform_role });
+  const adminPub = (u: U) => ({ ...pub(u), disabled: false, created_at: u.created_at, updated_at: u.updated_at });
+  const audit = (workspace_id: string | null, action: string, resource_type: string, resource_id: string, details: Json = {}) => {
     const u = me()!;
-    db.audit.unshift({ id: uid(), workspace_id, actor_user_id: u.id, actor_email: u.email, action, target_type, target_id, metadata, created_at: now() });
+    db.audit.unshift({ id: uid(), workspace_id, actor_user_id: u.id, actor_email: u.email, action, resource_type, resource_id, request_id: crypto.randomUUID(), details, created_at: now() });
   };
 
-  function paginate<T extends { id: string }>(items: T[], params: URLSearchParams) {
+  function paginate<T extends { id: string }>(items: T[], params: URLSearchParams, newestFirst = false) {
+    // The real server orders by (created_at, id) ascending unless `order=desc`; the mock stores audit rows newest first.
+    if (newestFirst && params.get('order') !== 'desc') items = [...items].reverse();
     const limit = Math.min(Number(params.get('limit') ?? 20) || 20, 100);
     const start = params.get('cursor') ? Number(atob(params.get('cursor')!)) : 0;
     const slice = items.slice(start, start + limit);
@@ -130,18 +133,18 @@ export function installMockApi(client: HttpClient) {
   async function handle(method: string, path: string, params: URLSearchParams, body: Json, headers: Headers): Promise<{ status: number; json?: unknown }> {
     if (method === 'POST' && path === '/auth/browser/login') {
       const u = db.users.find((x) => x.email.toLowerCase() === String(body.email ?? '').toLowerCase());
-      if (!u || u.password !== body.password) throw new HttpError(401, 'unauthenticated', 'Incorrect email or password.');
+      if (!u || u.password !== body.password) throw new HttpError(401, 'unauthenticated', 'invalid email or password');
       sessionUser = u.id;
       csrf = `csrf-${Math.random().toString(36).slice(2)}`;
       return { status: 200, json: { user: pub(u), csrf_token: csrf } };
     }
-    if (method === 'GET' && path === '/me') {
+    if (method === 'GET' && path === '/auth/browser/session') {
       const u = me();
-      if (!u) throw new HttpError(401, 'unauthenticated', 'Not signed in.');
-      return { status: 200, json: { user: pub(u), workspace_memberships: db.members.filter((m) => m.user_id === u.id).map((m) => ({ workspace_id: m.workspace_id, role: m.role })), csrf_token: csrf } };
+      if (!u) throw new HttpError(401, 'unauthenticated', 'authentication required');
+      return { status: 200, json: { user: pub(u), csrf_token: csrf } };
     }
     const u = me();
-    if (!u) throw new HttpError(401, 'unauthenticated', 'Authentication required.');
+    if (!u) throw new HttpError(401, 'unauthenticated', 'authentication required');
     if (method !== 'GET' && headers.get('X-CSRF-Token') !== csrf) throw new HttpError(403, 'csrf_invalid', 'Missing or invalid CSRF token.');
     if (method === 'POST' && path === '/auth/browser/logout') { sessionUser = null; csrf = null; return { status: 200, json: { ok: true } }; }
 
@@ -149,33 +152,40 @@ export function installMockApi(client: HttpClient) {
     if (path.startsWith('/admin/')) {
       if (!isAdmin(u)) throw new HttpError(403, 'forbidden', 'Platform admin access required.');
       if (method === 'GET' && path === '/admin/health') {
-        return { status: 200, json: { status: 'ok', services: { api: 'ok', postgres: 'ok', redis: 'ok', realtime: 'degraded' }, timestamp: now() } };
+        return { status: 200, json: { status: 'ok', services: { api: 'ok', postgres: 'ok' }, timestamp: now() } };
+      }
+      if (method === 'GET' && path === '/admin/stats') {
+        return { status: 200, json: { users: db.users.length, platform_admins: db.users.filter((x) => x.platform_role !== 'user').length, disabled_users: 0, workspaces: db.workspaces.length, memberships: db.members.length, pending_invites: db.invites.filter((i) => i.status === 'pending').length, pending_join_requests: db.joins.filter((j) => j.status === 'pending').length, collections: 0, requests: 0, environments: 0, active_sessions: 1, audit_logs: db.audit.length } };
       }
       if (method === 'GET' && path === '/admin/users') {
         const q = (params.get('q') ?? '').toLowerCase();
-        return { status: 200, json: paginate(db.users.filter((x) => !q || x.email.includes(q) || x.display_name.toLowerCase().includes(q)).map(pub), params) };
+        return { status: 200, json: paginate(db.users.filter((x) => !q || x.email.includes(q) || x.display_name.toLowerCase().includes(q)).map(adminPub), params) };
       }
       if (method === 'POST' && path === '/admin/users') {
         const role = String(body.platform_role ?? 'user');
+        const pw = body.password === undefined ? null : String(body.password);
+        if (pw !== null && pw.length < 12) throw new HttpError(400, 'invalid_request', 'request validation failed', { issues: [{ path: 'password', message: 'password must be at least 12 characters' }] });
         if (role !== 'user' && u.platform_role !== 'super_admin') throw new HttpError(403, 'forbidden', 'Only a super admin can create admins.');
         if (db.users.some((x) => x.email.toLowerCase() === String(body.email).toLowerCase())) {
-          throw new HttpError(409, 'conflict', 'A user with this email already exists.', { fields: { email: 'This email is already registered.' } });
+          throw new HttpError(409, 'conflict', 'a resource with these unique values already exists');
         }
-        const nu: U = { id: uid(), email: String(body.email), display_name: String(body.display_name), platform_role: role as U['platform_role'], password: String(body.password), created_at: now(), updated_at: now() };
+        const nu: U = { id: uid(), email: String(body.email), display_name: String(body.display_name), platform_role: role as U['platform_role'], password: pw ?? 'generated-temp-pass', created_at: now(), updated_at: now() };
         db.users.unshift(nu);
-        audit(null, 'user_created', 'user', nu.id, { platform_role: role });
-        return { status: 201, json: { user: pub(nu) } };
+        audit(null, 'admin.user_created', 'user', nu.id, { email: nu.email, platform_role: role });
+        return { status: 201, json: { user: adminPub(nu), temporary_password: pw === null ? 'generated-temp-pass' : null } };
       }
       const um = path.match(/^\/admin\/users\/([^/]+)$/);
       if (method === 'PATCH' && um) {
         if (u.platform_role !== 'super_admin') throw new HttpError(403, 'forbidden', 'Only a super admin can change platform roles.');
         const t = db.users.find((x) => x.id === um[1]);
-        if (!t) throw new HttpError(404, 'not_found', 'User not found.');
+        if (!t) throw new HttpError(404, 'not_found', 'user not found');
+        if (body.platform_role === 'super_admin') throw new HttpError(400, 'invalid_request', 'request validation failed', { issues: [{ path: 'platform_role', message: "Invalid enum value. Expected 'platform_admin' | 'user'" }] });
+        if (t.platform_role === 'super_admin') throw new HttpError(403, 'forbidden', "the super admin's role cannot be changed");
         if (t.email === 'person7@example.com') throw new HttpError(500, 'internal_error', 'Simulated server failure (person7).', {});
         t.platform_role = body.platform_role as U['platform_role'];
         t.updated_at = now();
-        audit(null, 'role_changed', 'user', t.id, { platform_role: t.platform_role });
-        return { status: 200, json: { user: pub(t) } };
+        audit(null, 'admin.user_role_changed', 'user', t.id, { email: t.email, changes: body });
+        return { status: 200, json: { user: adminPub(t) } };
       }
       if (method === 'GET' && path === '/admin/workspaces') {
         const q = (params.get('q') ?? '').toLowerCase();
@@ -183,7 +193,7 @@ export function installMockApi(client: HttpClient) {
       }
       if (method === 'GET' && path === '/admin/audit-logs') {
         const a = params.get('action');
-        return { status: 200, json: paginate(db.audit.filter((x) => !a || x.action === a), params) };
+        return { status: 200, json: paginate(db.audit.filter((x) => !a || x.action === a), params, true) };
       }
     }
 
@@ -209,8 +219,8 @@ export function installMockApi(client: HttpClient) {
       if (rest === '' && method === 'DELETE') {
         if (u.platform_role !== 'super_admin' && role !== 'owner') throw new HttpError(403, 'forbidden', 'Only a super admin or the owner can delete a workspace.');
         db.workspaces = db.workspaces.filter((x) => x.id !== wid);
-        audit(wid, 'workspace_deleted', 'workspace', wid, { name: w.name });
-        return { status: 204 };
+        audit(wid, 'workspace.deleted', 'workspace', wid, { name: w.name });
+        return { status: 200, json: { ok: true } };
       }
       if (rest === 'members' && method === 'GET') {
         const items = db.members.filter((m) => m.workspace_id === wid).map((m) => { const mu = db.users.find((x) => x.id === m.user_id)!; return { ...m, email: mu.email, display_name: mu.display_name }; });
@@ -226,13 +236,13 @@ export function installMockApi(client: HttpClient) {
           if (body.version !== m.version) throw new HttpError(409, 'version_mismatch', 'This member was changed by someone else.');
           if (m.user_id === db.users.find((x) => x.email === 'person5@example.com')?.id) throw new HttpError(500, 'internal_error', 'Simulated server failure (person5).');
           m.role = String(body.role); m.version += 1; m.updated_at = now();
-          audit(wid, 'role_changed', 'member', m.id, { role: m.role });
-          return { status: 200, json: { member: { id: m.id, role: m.role, version: m.version, updated_at: m.updated_at } } };
+          audit(wid, 'member.role_changed', 'membership', m.id, { to: m.role });
+          return { status: 200, json: { member: m } };
         }
         if (method === 'DELETE') {
           db.members = db.members.filter((x) => x.id !== m.id);
-          audit(wid, 'member_removed', 'member', m.id);
-          return { status: 204 };
+          audit(wid, 'member.removed', 'membership', m.id);
+          return { status: 200, json: { ok: true } };
         }
       }
       if (rest === 'invites') {
@@ -241,7 +251,7 @@ export function installMockApi(client: HttpClient) {
         if (method === 'POST') {
           const inv: I = { id: uid(), workspace_id: wid, email: String(body.email), role: String(body.role), status: 'pending', expires_at: new Date(Date.now() + 7 * 864e5).toISOString(), created_at: now(), updated_at: now(), version: 1 };
           db.invites.unshift(inv);
-          audit(wid, 'invite_sent', 'invite', inv.id, { email: inv.email });
+          audit(wid, 'invite.created', 'invite', inv.id, { email: inv.email, role: inv.role });
           const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, '0')).join('');
           return { status: 201, json: { invite: inv, invite_token: token } };
         }
@@ -252,8 +262,8 @@ export function installMockApi(client: HttpClient) {
         const inv = db.invites.find((x) => x.id === im[1] && x.workspace_id === wid);
         if (!inv) throw new HttpError(404, 'not_found', 'Invite not found.');
         inv.status = 'revoked';
-        audit(wid, 'invite_revoked', 'invite', inv.id);
-        return { status: 204 };
+        audit(wid, 'invite.revoked', 'invite', inv.id);
+        return { status: 200, json: { invite: inv } };
       }
       if (rest === 'join-requests' && method === 'GET') {
         if (!canModerate(u, role)) throw new HttpError(403, 'forbidden', 'Not allowed.');
@@ -271,17 +281,17 @@ export function installMockApi(client: HttpClient) {
           j.status = 'approved';
           const mem: M = { id: uid(), workspace_id: wid, user_id: j.requester_user_id, role: String(body.role), status: 'active', joined_at: now(), created_at: now(), updated_at: now(), version: 1 };
           db.members.push(mem);
-          audit(wid, 'join_request_approved', 'join_request', j.id, { role: mem.role });
+          audit(wid, 'join_request.approved', 'join_request', j.id, { role: mem.role });
           return { status: 200, json: { membership: mem } };
         }
         j.status = 'rejected';
-        audit(wid, 'join_request_rejected', 'join_request', j.id);
+        audit(wid, 'join_request.rejected', 'join_request', j.id);
         return { status: 200, json: { join_request: j } };
       }
       const hostView = (h: H) => ({ id: h.id, workspace_id: h.workspace_id, host: h.host, kind: h.kind, status: h.status, tls_status: h.tls_status, created_at: h.created_at, updated_at: h.updated_at, version: h.version });
       const verification = (h: H) => ({ dns_record_type: 'TXT', dns_record_name: `_slinger-verify.${h.host}`, dns_record_value: h.token });
       if (rest === 'hosts' && method === 'GET') {
-        return { status: 200, json: paginate(db.hosts.filter((h) => h.workspace_id === wid).map(hostView), params) };
+        return { status: 200, json: paginate(db.hosts.filter((h) => h.workspace_id === wid).map((h) => ({ ...hostView(h), verification: h.status === 'pending_verification' ? verification(h) : null })), params) };
       }
       if (rest === 'hosts' && method === 'POST') {
         if (!canManage(u, role)) throw new HttpError(403, 'forbidden', 'Only the owner can manage hosts.');
@@ -289,8 +299,8 @@ export function installMockApi(client: HttpClient) {
         const custom = body.kind === 'custom_domain';
         const h: H = { id: uid(), workspace_id: wid, host: String(body.host), kind: String(body.kind), status: custom ? 'pending_verification' : 'active', tls_status: custom ? 'pending' : 'ready', created_at: now(), updated_at: now(), version: 1, token: `verify-${uid().slice(-8)}`, checks: 0 };
         db.hosts.unshift(h);
-        audit(wid, 'host_added', 'host', h.id, { host: h.host });
-        return { status: 201, json: { host: hostView(h), ...(custom ? { verification: verification(h) } : {}) } };
+        audit(wid, 'host.added', 'host', h.id, { host: h.host });
+        return { status: 201, json: { host: hostView(h), verification: custom ? verification(h) : null } };
       }
       const hm = rest.match(/^hosts\/([^/]+)\/verify$/);
       if (hm && method === 'POST') {
@@ -299,12 +309,12 @@ export function installMockApi(client: HttpClient) {
         if (!h) throw new HttpError(404, 'not_found', 'Host not found.');
         h.checks += 1;
         if (h.checks >= 2) { h.status = 'active'; h.tls_status = 'ready'; h.updated_at = now(); }
-        return { status: 200, json: { host: hostView(h), ...(h.status !== 'active' ? { verification: verification(h) } : {}) } };
+        return { status: 200, json: { host: hostView(h), verified: h.status === 'active' } };
       }
       if (rest === 'audit-logs' && method === 'GET') {
         if (!canModerate(u, role)) throw new HttpError(403, 'forbidden', 'Not allowed.');
         const a = params.get('action');
-        return { status: 200, json: paginate(db.audit.filter((x) => x.workspace_id === wid && (!a || x.action === a)), params) };
+        return { status: 200, json: paginate(db.audit.filter((x) => x.workspace_id === wid && (!a || x.action === a)), params, true) };
       }
     }
     throw new HttpError(404, 'not_found', `No mock route for ${method} ${path}`);

@@ -28,18 +28,24 @@ export class ApiError extends Error {
     this.requestId = init.requestId ?? null;
   }
 
-  /** Field-level messages from `details.fields` (assumed shape) if the server sent any. */
+  /**
+   * Field-level messages. The server reports validation problems as
+   * `details.issues: [{ path: "email", message }]` (400 `invalid_request`); the first message per field wins.
+   */
   get fieldErrors(): Record<string, string> {
+    const out: Record<string, string> = {};
     const d = this.details;
-    if (d && typeof d === 'object' && 'fields' in d) {
-      const f = (d as { fields: unknown }).fields;
-      if (f && typeof f === 'object') {
-        return Object.fromEntries(
-          Object.entries(f as Record<string, unknown>).filter(([, v]) => typeof v === 'string'),
-        ) as Record<string, string>;
+    const issues = d && typeof d === 'object' && 'issues' in d ? (d as { issues: unknown }).issues : null;
+    if (Array.isArray(issues)) {
+      for (const i of issues) {
+        if (i && typeof i === 'object' && typeof (i as { message?: unknown }).message === 'string') {
+          const path = String((i as { path?: unknown }).path ?? '');
+          const field = path.split('.')[0] ?? '';
+          if (field && !(field in out)) out[field] = (i as { message: string }).message;
+        }
       }
     }
-    return {};
+    return out;
   }
 }
 

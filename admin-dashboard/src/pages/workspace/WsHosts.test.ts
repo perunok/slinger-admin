@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import WsHosts from './WsHosts.svelte';
+import { toasts } from '../../lib/state/toasts.svelte';
 import { session } from '../../lib/state/session.svelte';
 import { stubApi, user } from '../../test/helpers';
 
@@ -31,7 +32,7 @@ describe('WsHosts', () => {
     session.user = user({ platform_role: 'user' });
     const calls = stubApi((r) => {
       if (r.method === 'GET') return { json: { items: [{ ...pending, verification }] } };
-      if (r.path === '/workspaces/w1/hosts/h1/verify') return { json: { host: { ...pending, status: 'active', tls_status: 'ready' } } };
+      if (r.path === '/workspaces/w1/hosts/h1/verify') return { json: { host: { ...pending, status: 'active', tls_status: 'ready' }, verified: true } };
     });
     render(WsHosts, { props: { id: 'w1', role: 'owner' } });
     const ev = userEvent.setup();
@@ -40,6 +41,20 @@ describe('WsHosts', () => {
     await waitFor(() => expect(screen.getByText('Active')).toBeInTheDocument());
     expect(calls.some((c) => c.method === 'POST' && c.path === '/workspaces/w1/hosts/h1/verify')).toBe(true);
     expect(screen.queryByText('verify-123')).toBeNull();
+  });
+
+  it('Re-check DNS with a missing record keeps the pending row and its TXT instructions', async () => {
+    session.user = user({ platform_role: 'user' });
+    stubApi((r) => {
+      if (r.method === 'GET') return { json: { items: [{ ...pending, verification }] } };
+      if (r.path === '/workspaces/w1/hosts/h1/verify') return { json: { host: pending, verified: false } };
+    });
+    render(WsHosts, { props: { id: 'w1', role: 'owner' } });
+    const ev = userEvent.setup();
+    await screen.findByText('verify-123');
+    await ev.click(screen.getByRole('button', { name: /re-check dns for api.acme.com/i }));
+    await waitFor(() => expect(toasts.items.some((t) => /DNS record not found yet/i.test(t.message))).toBe(true));
+    expect(screen.getByText('verify-123')).toBeInTheDocument();
   });
 
   it('non-owners cannot add hosts or re-check', async () => {

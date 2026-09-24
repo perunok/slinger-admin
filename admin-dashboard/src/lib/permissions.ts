@@ -18,7 +18,8 @@ export const canCreateUsers = isPlatformAdmin;
 
 /** Platform roles the caller may assign when creating a user / changing a role. */
 export function assignablePlatformRoles(p: Role): PlatformRole[] {
-  if (isSuperAdmin(p)) return ['user', 'platform_admin', 'super_admin'];
+  // `super_admin` is never assignable: the single super admin comes from SLINGER_ADMIN_BOOTSTRAP.
+  if (isSuperAdmin(p)) return ['user', 'platform_admin'];
   if (isPlatformAdmin(p)) return ['user'];
   return [];
 }
@@ -32,6 +33,10 @@ export const canModerateMembership = (p: Role, w: WsRole) => isPlatformAdmin(p) 
 /** Change a member's role, remove a member, manage hosts. */
 export const canManageMembers = (p: Role, w: WsRole) => isPlatformAdmin(p) || w === 'owner';
 export const canManageHosts = canManageMembers;
+
+/** Tabs backed by owner/admin-only routes (`/hosts` needs owner, `/audit-logs` and `/invites` need admin). */
+export const canViewHosts = canManageMembers;
+export const canViewWorkspaceAudit = canModerateMembership;
 
 export const canDeleteWorkspace = (p: Role, w: WsRole) => isSuperAdmin(p) || w === 'owner';
 

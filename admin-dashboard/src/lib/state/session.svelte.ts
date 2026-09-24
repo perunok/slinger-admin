@@ -3,24 +3,7 @@ import { ApiError, errorMessage } from '../api/errors';
 import type { User } from '../api/schemas';
 import { router } from './router.svelte';
 
-const CSRF_KEY = 'slinger.csrf';
 export type SessionStatus = 'booting' | 'anonymous' | 'authenticated';
-
-function storeCsrf(token: string | null) {
-  try {
-    if (token) sessionStorage.setItem(CSRF_KEY, token);
-    else sessionStorage.removeItem(CSRF_KEY);
-  } catch {
-    /* storage unavailable */
-  }
-}
-function loadCsrf(): string | null {
-  try {
-    return sessionStorage.getItem(CSRF_KEY);
-  } catch {
-    return null;
-  }
-}
 
 class SessionState {
   status = $state<SessionStatus>('booting');
@@ -58,19 +41,17 @@ class SessionState {
     this.user = null;
     this.status = 'anonymous';
     client.setCsrfToken(null);
-    storeCsrf(null);
   }
 
   /** Restores a session from the httpOnly cookie on page load. */
   async boot() {
     this.status = 'booting';
-    client.setCsrfToken(loadCsrf());
+    client.setCsrfToken(null);
     try {
-      const me = await api.auth.me();
-      const csrf = me.csrf_token ?? loadCsrf();
-      client.setCsrfToken(csrf);
-      storeCsrf(csrf);
-      this.user = me.user;
+      // The CSRF token is re-derived server-side from the session, so nothing is kept in web storage.
+      const s = await api.auth.session();
+      client.setCsrfToken(s.csrf_token);
+      this.user = s.user;
       client.markAuthenticated();
       this.status = 'authenticated';
     } catch (e) {
@@ -86,14 +67,13 @@ class SessionState {
     try {
       res = await api.auth.login(email.trim(), password);
     } catch (e) {
-      // A bare 401 (no server-provided message) on login means bad credentials, not an expired session.
-      if (e instanceof ApiError && e.kind === 'unauthenticated' && e.code.startsWith('http_')) {
+      // A 401 on login always means bad credentials (the server says "invalid email or password"), not an expired session.
+      if (e instanceof ApiError && e.kind === 'unauthenticated') {
         throw new ApiError({ kind: 'unauthenticated', status: 401, code: 'invalid_credentials', message: 'Incorrect email or password.' });
       }
       throw e;
     }
     client.setCsrfToken(res.csrf_token);
-    storeCsrf(res.csrf_token);
     client.markAuthenticated();
     this.user = res.user;
     this.status = 'authenticated';

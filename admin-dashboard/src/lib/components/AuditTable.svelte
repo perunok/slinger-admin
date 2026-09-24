@@ -15,8 +15,18 @@
     showWorkspace?: boolean;
   } = $props();
 
-  // Actions named in docs/api-contract-v2.md; the filter is sent to the server as `action`.
-  const ACTIONS = ['invite_sent', 'invite_revoked', 'role_changed', 'member_removed', 'join_request_approved', 'join_request_rejected', 'host_added', 'workspace_deleted'];
+  // Action names the server writes (server/README.md, "Authorization matrix"); the filter is sent as `action`.
+  const WORKSPACE_ACTIONS = [
+    'workspace.created', 'workspace.updated', 'workspace.deleted', 'workspace.published',
+    'member.role_changed', 'member.removed',
+    'invite.created', 'invite.revoked', 'invite.accepted',
+    'join_request.approved', 'join_request.rejected',
+    'host.added', 'host.verified', 'host.removed',
+  ];
+  const ADMIN_ACTIONS = ['admin.user_created', 'admin.user_updated', 'admin.user_role_changed', 'admin.workspace_deleted'];
+  const ACTIONS = $derived(showWorkspace ? [...ADMIN_ACTIONS, ...WORKSPACE_ACTIONS] : WORKSPACE_ACTIONS);
+  /** `member.role_changed` -> "Member role changed" */
+  const actionLabel = (a: string) => humanize(a.replace('.', ' '));
 
   let action = $state('');
   let text = $state('');
@@ -26,9 +36,9 @@
     untrack(() => void pager.load());
   });
   const visible = $derived(
-    pager.items.filter((l) => matches(text, l.actor_email, l.actor_user_id, l.target_id, l.target_type, l.action)),
+    pager.items.filter((l) => matches(text, l.actor_email, l.actor_user_id, l.resource_id, l.resource_type, l.action)),
   );
-  const details = (l: AuditLog) => (l.metadata && Object.keys(l.metadata).length ? JSON.stringify(l.metadata) : '');
+  const details = (l: AuditLog) => (l.details && Object.keys(l.details).length ? JSON.stringify(l.details) : '');
 </script>
 
 <div class="card flush">
@@ -37,7 +47,7 @@
       <label for="audit-action">Action</label>
       <select id="audit-action" class="select" bind:value={action}>
         <option value="">All actions</option>
-        {#each ACTIONS as a (a)}<option value={a}>{humanize(a)}</option>{/each}
+        {#each ACTIONS as a (a)}<option value={a}>{actionLabel(a)}</option>{/each}
       </select>
     </div>
     <div class="field grow">
@@ -62,9 +72,9 @@
           {#each visible as l (l.id)}
             <tr>
               <td class="muted nowrap">{formatDate(l.created_at)}</td>
-              <td><strong>{humanize(l.action)}</strong></td>
+              <td><strong>{actionLabel(l.action)}</strong></td>
               <td>{l.actor_email ?? l.actor_user_id ?? 'system'}</td>
-              <td>{#if l.target_type}{humanize(l.target_type)} {/if}<span class="mono muted">{l.target_id ?? ''}</span></td>
+              <td>{#if l.resource_type}{humanize(l.resource_type)} {/if}<span class="mono muted">{l.resource_id ?? ''}</span></td>
               {#if showWorkspace}<td class="mono muted">{l.workspace_id ?? '—'}</td>{/if}
               <td class="mono muted details">{details(l)}</td>
             </tr>

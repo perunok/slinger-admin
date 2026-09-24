@@ -44,7 +44,7 @@ describe('HttpClient request building', () => {
 describe('HttpClient error normalization', () => {
   it('parses the documented error envelope', async () => {
     const { client } = make(async () =>
-      ok({ error: { code: 'version_mismatch', message: 'Changed by someone else', details: { fields: { role: 'bad' } }, request_id: 'r1' } }, 409),
+      ok({ error: { code: 'version_mismatch', message: 'Changed by someone else', details: { issues: [{ path: 'role', message: 'bad' }, { path: 'role', message: 'second' }] }, request_id: 'r1' } }, 409),
     );
     const e = await client.request('PATCH', '/a', { schema: anyObj }).catch((x) => x);
     expect(e).toBeInstanceOf(ApiError);
@@ -92,7 +92,7 @@ describe('HttpClient error normalization', () => {
   it('validates the response against the schema instead of casting', async () => {
     const { client } = make(async () => ok({ user: { id: 1 } }));
     const api = createApi(client);
-    const e = await api.auth.me().catch((x) => x);
+    const e = await api.auth.session().catch((x) => x);
     expect(e).toMatchObject({ kind: 'invalid_response' });
   });
 });
@@ -146,10 +146,25 @@ describe('endpoint paths', () => {
     await api.workspaces.members('a/b', { cursor: 'c1', limit: 5 });
     await api.workspaces.joinRequests('w1', { status: 'pending' });
     await api.admin.auditLogs({});
-    expect(fetch.mock.calls[0]![0]).toBe('/api/v1/workspaces/a%2Fb/members?limit=5&cursor=c1');
+    const u = new URL(String(fetch.mock.calls[0]![0]), 'http://x');
+    expect(u.pathname).toBe('/api/v1/workspaces/a%2Fb/members');
+    expect(Object.fromEntries(u.searchParams)).toEqual({ limit: '5', cursor: 'c1', order: 'asc' });
     expect(fetch.mock.calls[1]![0]).toContain('/v1/workspaces/w1/join-requests?');
     expect(fetch.mock.calls[2]![0]).toContain('/v1/admin/audit-logs');
     for (const c of fetch.mock.calls) expect(c[0]).not.toContain('/settings/');
+  });
+
+  it('audit logs and newest-first lists ask the server for order=desc', async () => {
+    const { client, fetch } = make(async () => ok({ items: [], page: { next_cursor: null, has_more: false } }));
+    const api = createApi(client);
+    await api.admin.auditLogs({ action: 'invite.created' });
+    await api.workspaces.auditLogs('w1', {});
+    await api.admin.users({});
+    const q = (i: number) => new URL(String(fetch.mock.calls[i]![0]), 'http://x').searchParams;
+    expect(q(0).get('order')).toBe('desc');
+    expect(q(0).get('action')).toBe('invite.created');
+    expect(q(1).get('order')).toBe('desc');
+    expect(q(2).get('order')).toBe('desc');
   });
 
   it('tolerates list responses without a page object (hosts)', async () => {

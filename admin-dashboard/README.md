@@ -1,14 +1,13 @@
 # Slinger Admin Dashboard
 
 Svelte 5 (runes) + TypeScript (strict) + Vite admin UI for Slinger Cloud. Talks to the API under `/v1` with an
-httpOnly session cookie plus `X-CSRF-Token`. See `API-ASSUMPTIONS.md` for every endpoint it calls and which ones are
-guesses.
+httpOnly session cookie plus `X-CSRF-Token`. See `API-USAGE.md` for every endpoint it calls (verified against the server).
 
 ## Commands
 
 ```sh
 npm ci
-npm run dev          # dev server, API at VITE_API_BASE_URL or http://localhost:8080 (dev only)
+npm run dev          # http://localhost:5173, proxies /api/* to the API on :8080 (SLINGER_API_PROXY overrides)
 npm run dev:mock     # dev server against the in-memory fake API (no backend needed)
 npm run typecheck    # svelte-check (strict)
 npm test             # vitest (unit + component tests)
@@ -31,7 +30,8 @@ The API base URL (the prefix in front of `/v1`) is resolved at runtime from `win
 matching `deploy/Caddyfile`) before starting `vite preview`.
 
 In a production build, a missing/invalid value shows a blocking "Dashboard is not configured" screen and no request is
-made; there is no `localhost` fallback. Only `npm run dev` falls back to `VITE_API_BASE_URL` / `http://localhost:8080`.
+made; there is no `localhost` fallback. Only `npm run dev` falls back to `VITE_API_BASE_URL` / `/api` (proxied by Vite to `http://localhost:8080`, so the browser sees one origin and needs no CORS).
+To test cross-origin instead run `VITE_API_BASE_URL=http://localhost:8080 npm run dev` and start the server with `SLINGER_ALLOWED_ORIGINS=http://localhost:5173`.
 
 Docker (build context is the repository root; `.dockerignore` keeps host `node_modules` out):
 
@@ -51,7 +51,7 @@ src/
   lib/api/          ALL HTTP: client.ts (fetch, CSRF, error normalization, global 401), endpoints.ts (routes),
                     schemas.ts (zod), errors.ts, config.ts
   lib/state/        session, router (hash), toasts, theme, paginator, action (busy/double-submit guard)
-  lib/permissions.ts  authorization matrix from docs/api-contract-v2.md
+  lib/permissions.ts  authorization matrix from server/README.md
   lib/validation.ts   client-side form validation
   lib/components/   Button, fields, Modal (native <dialog>), ConfirmDialog, Toasts, ListState, AuditTable, ...
   pages/            Overview, Users, Workspaces, WorkspaceDetail (+ workspace/ tabs), Audit
@@ -74,6 +74,5 @@ Design notes:
 
 ## Known limitations
 
-Routes marked **[assumed]** in `API-ASSUMPTIONS.md` are unverified against the Fastify backend, and there is no
-end-to-end test against the real server yet. Keyboard/screen-reader support relies on native elements (`<dialog>`,
+The end-to-end smoke test lives at the repo root (`npm run e2e`). Keyboard/screen-reader support relies on native elements (`<dialog>`,
 `<select>`, links, buttons) and has not been audited with assistive technology.

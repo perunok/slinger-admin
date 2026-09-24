@@ -11,7 +11,7 @@ const users = {
 };
 
 describe('UsersPage role-based UI', () => {
-  it('super admin can change platform roles (not their own) and create any role', async () => {
+  it('super admin can change platform roles (not their own) and create admins (never another super admin)', async () => {
     session.user = user({ id: 'me', platform_role: 'super_admin' });
     stubApi(() => ({ json: users }));
     render(UsersPage);
@@ -21,7 +21,7 @@ describe('UsersPage role-based UI', () => {
     const ev = userEvent.setup();
     await ev.click(screen.getByRole('button', { name: 'Create user' }));
     const opts = within(await screen.findByLabelText('Platform role')).getAllByRole('option').map((o) => o.textContent);
-    expect(opts).toEqual(['User', 'Platform admin', 'Super admin']);
+    expect(opts).toEqual(['User', 'Platform admin']);
   });
 
   it('platform admin cannot change roles and can only create plain users', async () => {

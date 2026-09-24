@@ -5,7 +5,7 @@
   import { errorMessage } from '../lib/api/errors';
   import { session } from '../lib/state/session.svelte';
   import { hashHref, paths, WORKSPACE_TABS, type WorkspaceTab } from '../lib/state/router.svelte';
-  import { canModerateMembership } from '../lib/permissions';
+  import { canModerateMembership, canViewHosts, canViewWorkspaceAudit } from '../lib/permissions';
   import { humanize } from '../lib/format';
   import Button from '../lib/components/Button.svelte';
   import Badge from '../lib/components/Badge.svelte';
@@ -46,10 +46,15 @@
     hosts: 'Hosts',
     audit: 'Audit log',
   };
-  // Invites / join requests are moderation tools: hide them for roles that cannot use them.
-  const tabs = $derived(
-    WORKSPACE_TABS.filter((t) => (t === 'invites' || t === 'join-requests' ? canModerateMembership(session.platformRole, role) : true)),
-  );
+  // The server only serves these tabs' routes to some roles (see server/README.md, authorization matrix):
+  // invites, join requests, audit log -> owner/admin; hosts -> owner; platform admins can do everything.
+  const tabVisible = (t: WorkspaceTab) => {
+    if (t === 'invites' || t === 'join-requests') return canModerateMembership(session.platformRole, role);
+    if (t === 'hosts') return canViewHosts(session.platformRole, role);
+    if (t === 'audit') return canViewWorkspaceAudit(session.platformRole, role);
+    return true;
+  };
+  const tabs = $derived(WORKSPACE_TABS.filter(tabVisible));
   const tabAllowed = $derived(tabs.includes(tab));
 </script>
 

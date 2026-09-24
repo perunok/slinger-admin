@@ -1,0 +1,13 @@
+{
+  "name": "slinger-admin",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Slinger Cloud: Fastify/Prisma API server + Svelte admin dashboard. Convenience scripts for the whole repo.",
+  "scripts": {
+    "setup": "npm --prefix server ci && npm --prefix admin-dashboard ci && npm --prefix e2e ci && npm --prefix e2e exec -- playwright install chromium",
+    "typecheck": "npm --prefix server run typecheck && npm --prefix admin-dashboard run typecheck && npm --prefix e2e run typecheck",
+    "test:server": "npm --prefix server test",
+    "test:dashboard": "npm --prefix admin-dashboard test",
+    "e2e": "node e2e/run.mjs"
+  }
+}

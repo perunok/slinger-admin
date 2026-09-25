@@ -1,0 +1,30 @@
+# HTTPS with automatic certificates (Let's Encrypt). Enable with, in .env:
+#   SLINGER_CADDYFILE=./deploy/Caddyfile.https
+#   SLINGER_DOMAIN=cloud.example.com      (DNS A/AAAA record must point at this host; ports 80+443 must be reachable)
+#   SLINGER_BASE_URL=https://cloud.example.com
+#   SLINGER_COOKIE_SECURE=true
+# Routing is identical to deploy/Caddyfile. HTTP on :80 is redirected to HTTPS automatically by Caddy.
+{$SLINGER_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	@server path /v1/* /device /device/* /healthz
+	handle @server {
+		reverse_proxy server:8080
+	}
+
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy server:8080
+	}
+
+	handle {
+		reverse_proxy admin-dashboard:4173
+	}
+}

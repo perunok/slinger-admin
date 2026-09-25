@@ -1,67 +1,85 @@
+# Slinger Cloud: postgres + server (Node/TypeScript API) + admin dashboard, behind a Caddy reverse proxy.
+# Only the proxy publishes host ports. See server/README.md and deploy-manual.md.
+#
+#   cp .env.example .env   # then fill in every value marked REQUIRED
+#   docker compose up -d --build
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-slinger}
       POSTGRES_USER: ${POSTGRES_USER:-slinger}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-slinger}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (URL-safe characters only, e.g. openssl rand -hex 24)}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     expose:
       - "5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
-  redis:
-    image: redis:7-alpine
-    expose:
-      - "6379"
-
-  api:
-    image: ${SLINGER_API_IMAGE:-slinger-api:latest}
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-slinger}:${POSTGRES_PASSWORD:-slinger}@postgres:5432/${POSTGRES_DB:-slinger}?sslmode=disable
-      SLINGER_API_ADDR: :8080
-      SLINGER_ADMIN_BOOTSTRAP: ${SLINGER_ADMIN_BOOTSTRAP:-[{"username":"admin","password":"admin","email":"admin@slinger.local","display_name":"Bootstrap Admin","platform_role":"super_admin"}]}
-      SLINGER_BASE_URL: ${SLINGER_BASE_URL:-http://localhost}
-      SLINGER_ADMIN_DASHBOARD_URL: ${SLINGER_ADMIN_DASHBOARD_URL:-http://localhost}
-      SLINGER_SIGNING_SECRET: ${SLINGER_SIGNING_SECRET:-change-me-in-production}
+  server:
+    build:
+      context: ./server
+    image: ${SLINGER_SERVER_IMAGE:-slinger-server:latest}
+    restart: unless-stopped
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-slinger}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-slinger}?schema=public
+      # No defaults for secrets: compose refuses to start until they are set.
+      SLINGER_SIGNING_SECRET: ${SLINGER_SIGNING_SECRET:?set SLINGER_SIGNING_SECRET in .env (openssl rand -hex 32)}
+      SLINGER_ADMIN_BOOTSTRAP: ${SLINGER_ADMIN_BOOTSTRAP:?set SLINGER_ADMIN_BOOTSTRAP in .env (JSON array, see .env.example)}
+      SLINGER_BASE_URL: ${SLINGER_BASE_URL:-http://localhost}
+      SLINGER_ALLOWED_ORIGINS: ${SLINGER_ALLOWED_ORIGINS:-}
+      SLINGER_SHARED_DOMAIN: ${SLINGER_SHARED_DOMAIN:-}
+      # memory (per process) or postgres (shared by all server instances)
+      SLINGER_RATE_LIMIT_STORE: ${SLINGER_RATE_LIMIT_STORE:-memory}
+      # The proxy is on the internal network, so its X-Forwarded-For is trustworthy (real client IP for rate limiting).
+      SLINGER_TRUST_PROXY: "true"
+      # Secure cookies need HTTPS. Set to true when using deploy/Caddyfile.https (see .env.example).
+      SLINGER_COOKIE_SECURE: ${SLINGER_COOKIE_SECURE:-false}
     expose:
       - "8080"
 
-  worker:
-    image: ${SLINGER_API_IMAGE:-slinger-api:latest}
-    command: ["/app/worker"]
-    depends_on:
-      - postgres
-      - redis
-
-  realtime:
-    image: ${SLINGER_API_IMAGE:-slinger-api:latest}
-    command: ["/app/realtime"]
-    depends_on:
-      - redis
-
   admin-dashboard:
+    build:
+      context: .
+      dockerfile: admin-dashboard/Dockerfile
     image: ${SLINGER_ADMIN_DASHBOARD_IMAGE:-slinger-admin-dashboard:latest}
+    restart: unless-stopped
     environment:
+      # Same-origin API prefix served by the proxy (/api/* -> server, prefix stripped).
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
     depends_on:
-      - api
+      - server
     expose:
       - "4173"
 
   proxy:
     image: caddy:2-alpine
+    restart: unless-stopped
     depends_on:
-      - api
+      - server
       - admin-dashboard
+    environment:
+      SLINGER_DOMAIN: ${SLINGER_DOMAIN:-localhost}
     ports:
       - "${SLINGER_HTTP_PORT:-80}:80"
       - "${SLINGER_HTTPS_PORT:-443}:443"
     volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # HTTP (default) or HTTPS: set SLINGER_CADDYFILE=./deploy/Caddyfile.https for automatic Let's Encrypt.
+      - ${SLINGER_CADDYFILE:-./deploy/Caddyfile}:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
 
 volumes:
   postgres-data:
+  caddy-data:
+  caddy-config:

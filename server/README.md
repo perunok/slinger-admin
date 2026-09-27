@@ -94,7 +94,8 @@ from every write incl. sync push, cross-workspace IDOR (404s), invite token/emai
 Bearer), login rate limiting, CORS allowlist, request-id propagation, body cap, secret masking, cursor pagination on every
 list, audit-log writes, sync push/pull (incl. tombstones for cascaded folder/collection/environment deletes), sync v2 (`test/syncV2.test.ts`: sort_order, request moves, secret metadata, collection versions, snapshot with ~2k entities, limits, idempotent replays, two-client convergence, role matrix and cross-workspace IDOR), admin routes (incl. a disabled user's sessions,
 access tokens and refresh tokens being rejected, and the 503 health body), hosts + DNS verification, the Postgres-backed rate limit
-store shared by two app instances, bootstrap validation and production config failures.
+store shared by two app instances, bootstrap validation and production config failures, password change/reset and `must_change_password`
+(`test/account.test.ts`: session/token revocation, forced-change route gate, device-flow refusal, rate limit), default role for join requests.
 
 ## Docker / deployment
 
@@ -135,7 +136,7 @@ and exits (forced exit after 10 s).
   `403 {error.code: "csrf_invalid"}`. Bearer requests are exempt. Login/refresh/device-poll (unauthenticated) need none.
 - **Errors:** `{ "error": { "code", "message", "details", "request_id" } }`. Codes: `invalid_request` (400/413/415; zod problems
   in `details.issues[{path,message}]`), `unauthenticated` 401, `forbidden` 403, `workspace_access_denied` 403, `csrf_invalid` 403,
-  `origin_not_allowed` 403, `invite_invalid` 403, `not_found` 404, `conflict` 409, `version_mismatch` 409
+  `origin_not_allowed` 403, `invite_invalid` 403, `password_change_required` 403, `not_found` 404, `conflict` 409, `version_mismatch` 409
   (`details.current_version`), `sync_conflict` (per-operation in push responses), `join_request_not_allowed` 400,
   `rate_limited` 429 (+ `Retry-After`), `internal_error` 500. Send `X-Request-Id` (<=128 chars `[A-Za-z0-9._:-]`) or one is generated;
   it is echoed in the `X-Request-Id` response header and `error.request_id`.
@@ -152,7 +153,21 @@ and exits (forced exit after 10 s).
   converge without re-deriving the cascade. Entry format unchanged.
 - Device login: desktop calls `POST /v1/auth/device/start`, opens `verification_uri_complete` (`/device?user_code=..`, an HTML page where
   the user enters email + password) **or** the dashboard's signed-in user calls `POST /v1/auth/device/approve {user_code}`; the desktop polls
-  `POST /v1/auth/device/poll {device_code}` -> `pending` | `approved` (tokens, once) | `expired`.
+  `POST /v1/auth/device/poll {device_code}` -> `pending` | `approved` (tokens, once) | `expired` | `denied` (`reason: password_change_required`).
+- **Passwords:** policy 12-256 characters (`src/routes/me.ts`). `POST /v1/me/password {current_password, new_password}` (new must differ;
+  wrong current -> `403 forbidden` + `details.reason: invalid_current_password`; per-user rate limit with the login budget -> `429`).
+  **After a password change** every refresh token is revoked, every access token issued before is rejected (the user's `tokenVersion`
+  is bumped; access tokens carry it as the `tv` claim), and every dashboard session is deleted **except the caller's own cookie session**,
+  which keeps its CSRF token. A Bearer caller's own access token dies too (the desktop signs in again). Password reset by an admin and
+  disabling sign the user out everywhere the same way (re-enabling does not resurrect old tokens).
+- **`must_change_password`** (in `user` of login/session/`/me`/device poll and admin views): set for generated temporary passwords
+  (`POST /v1/admin/users` without `password`) and by `POST /v1/admin/users/{id}/reset-password`; admins can set/clear it with
+  `PATCH /v1/admin/users/{id}` or request it on create. While set, dashboard login works but only `GET /v1/me`, `POST /v1/me/password`,
+  `GET /v1/auth/browser/session` and `POST /v1/auth/browser/logout` are served (enforced in `authenticate`, opt-in per route via
+  `defineRoute({ allowWhilePasswordChangeRequired })`); every other route, existing sessions and Bearer tokens included, answers
+  `403 password_change_required`. Desktop sign-in is refused: the `/device` page shows a 403 with instructions (only after the correct
+  password, so nothing is revealed), `POST /v1/auth/device/approve` is a 403, and a flow approved before the flag was set polls as `denied`.
+  Refresh tokens keep rotating while the flag is set, but their access tokens only reach the routes above.
 
 ## Authorization matrix
 
@@ -163,12 +178,14 @@ route uses; nothing is hand-rolled per handler. `platform` = `super_admin` or `p
 |---|---|
 | Read content (collections/folders/requests/environments/variables), members list, sync pull, realtime/collab tokens | platform admin **or** any active member (owner/admin/editor/viewer) |
 | Write content (create/update/delete of the above), sync push | platform admin **or** owner/admin/editor. **Viewer: never** |
-| Invite members, revoke invites, list/approve/reject join requests, read workspace audit log | platform admin **or** owner/admin |
+| Invite members, revoke invites, list/approve/reject join requests, read workspace audit log | platform admin **or** owner/admin (never granting a role above the caller's own; approval without `role` grants `default_role_for_requests`) |
 | Change member role, remove member, manage hosts (list/add/verify/remove), update workspace settings | platform admin **or** owner |
 | Delete workspace | `super_admin` **or** owner (`platform_admin` alone is **not** enough) |
 | Create workspace / publish / request to join / accept an invite / resolve | any authenticated user (accept needs the invite token **and** the invited email) |
 | `/v1/admin/*` | platform admin only |
-| `POST /v1/admin/users` with `platform_role: platform_admin`, `PATCH /v1/admin/users/{id}` role changes or any change to an admin, `DELETE /v1/admin/workspaces/{id}` | `super_admin` only |
+| `POST /v1/admin/users` with `platform_role: platform_admin`, `PATCH /v1/admin/users/{id}` role changes or any change to an admin, password reset of an admin, `DELETE /v1/admin/workspaces/{id}` | `super_admin` only |
+| `POST /v1/admin/users/{id}/reset-password` | platform admin for regular users; never yourself (use `POST /v1/me/password`), so never the super admin |
+| Everything except `GET /v1/me`, `POST /v1/me/password`, session probe, logout | not while the caller's `must_change_password` is set (`403 password_change_required`) |
 
 Notes: the workspace owner's role can't be changed or removed; the single `super_admin` can't be created, demoted or disabled via the API.
 Non-members get the same `403 workspace_access_denied` for real and nonexistent workspace ids. Resources are always looked up by
@@ -176,7 +193,9 @@ Non-members get the same `403 workspace_access_denied` for real and nonexistent 
 compared in constant time, all failures return the same `403 invite_invalid`.
 Audit log rows (`GET /v1/workspaces/{id}/audit-logs`, `GET /v1/admin/audit-logs`) are written in the same transaction as
 `workspace.created|updated|deleted|published`, `member.role_changed|removed`, `invite.created|revoked|accepted`,
-`join_request.approved|rejected`, `host.added|verified|removed`, `admin.user_created|user_updated|user_role_changed|workspace_deleted`.
+`join_request.approved|rejected` (details: `role`, `requested_role`, `role_source: explicit|workspace_default`), `host.added|verified|removed`,
+`admin.user_created|user_updated|user_role_changed|user_password_reset|workspace_deleted`, `user.password_changed` (details: `was_required`, `via`;
+never the password).
 They survive workspace deletion.
 
 ## Endpoint reference
@@ -204,7 +223,7 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 | `POST` | `/v1/auth/browser/logout` | auth | 200 | Dashboard logout: deletes the server-side session and clears the cookie |
 | `GET` | `/v1/auth/browser/session` | auth | 200 | Current dashboard session: user + CSRF token (recoverable after a page reload) |
 | `GET` | `/v1/me` | auth | 200 | Current user and their active workspace memberships |
-| `POST` | `/v1/me/password` | auth | 200 | Change own password; revokes all refresh tokens and dashboard sessions |
+| `POST` | `/v1/me/password` | auth | 200 | Change own password; signs out every other session and device |
 
 #### Workspaces
 
@@ -293,7 +312,8 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 |---|---|---|---|---|
 | `GET` | `/v1/admin/users` | auth — platform_admin or super_admin | 200 | List platform users |
 | `POST` | `/v1/admin/users` | auth — platform_admin or super_admin; platform_role=platform_admin needs super_admin only | 201 | Create/onboard a user. Creating a platform_admin requires super_admin. |
-| `PATCH` | `/v1/admin/users/{userId}` | auth — platform_admin or super_admin for regular users; super_admin only for roles and for other admins | 200 | Update a user's display name, platform role or disabled state |
+| `PATCH` | `/v1/admin/users/{userId}` | auth — platform_admin or super_admin for regular users; super_admin only for roles and for other admins | 200 | Update a user's display name, platform role, disabled state or must-change-password flag |
+| `POST` | `/v1/admin/users/{userId}/reset-password` | auth — platform_admin or super_admin for regular users; super_admin only for other admins; never yourself | 200 | Reset a user's password to a new temporary one (returned once) that must be changed at next sign-in |
 | `GET` | `/v1/admin/workspaces` | auth — platform_admin or super_admin | 200 | List all workspaces on the platform |
 | `GET` | `/v1/admin/workspaces/{workspaceId}` | auth — platform_admin or super_admin | 200 | Workspace inspection: metadata, owner, member and content counts |
 | `DELETE` | `/v1/admin/workspaces/{workspaceId}` | auth — super_admin only | 200 | Delete any workspace (platform level) |
@@ -308,7 +328,7 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 (See `openapi.yaml` for complete schemas.)
 
 - **Audit log**: `id, actor_user_id, actor_email (null for system/deleted users), action, resource_type, resource_id, workspace_id, request_id, details, created_at`.
-- **User**: `id, email, display_name, platform_role` (`super_admin|platform_admin|user`); admin views add `disabled, created_at, updated_at`.
+- **User**: `id, email, display_name, platform_role` (`super_admin|platform_admin|user`), `must_change_password`; admin views add `disabled, created_at, updated_at`.
 - **Workspace**: `id, slug, name, description, owner_user_id, visibility, default_role_for_requests, host_mode, created_at, updated_at, version`;
   list items add `role`. Create body `{name, slug?, description?}`. Patch body `{name?, description?, visibility?, default_role_for_requests?, version}`.
 - **Publish** `POST /v1/workspaces/publish`: `{local_workspace:{name, proposed_slug?}, publish_mode:"create"|"attach_existing", workspace_id?, client?:{client_id?, device_name?}}`
@@ -316,7 +336,7 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 - **Member**: `id, workspace_id, user_id, email, display_name, role, status, joined_at, ..., version`; `PATCH {role: admin|editor|viewer, version}`.
 - **Invite**: create `{email, role}` -> `{invite, invite_token}` (token returned once; deliver it out of band, email sending is stubbed);
   accept `POST /v1/invites/{invite_id}/accept {invite_token}` -> `{workspace_id, membership:{role}}`.
-- **Join request**: `{id, requester_user_id, requester_email, requester_display_name, message, status, requested_role, version, ...}`; create `{message?, requested_role?}` -> `{join_request}`; approve `{role?, version?}` -> `{membership}`; reject `{version?}`.
+- **Join request**: `{id, requester_user_id, requester_email, requester_display_name, message, status, requested_role, version, ...}`; create `{message?, requested_role?}` -> `{join_request}`; approve `{role?, version?}` -> `{membership}` (no `role`: the workspace's `default_role_for_requests`; `requested_role` is only a hint); reject `{version?}`.
 - **Host**: `{host, kind: dedicated_subdomain|custom_domain}` -> `{host:{id,host,kind,status,tls_status,...}, verification:{dns_record_type:"TXT", dns_record_name, dns_record_value}|null}`;
   `POST .../hosts/{host_id}/verify` -> `{host, verified}`.
 - **Content**: collection `{name}`; folder `{name, parent_folder_id?, sort_order?}`; request `{name, method (any HTTP token), url, document_json, folder_id?, sort_order?}`; environment `{name}`;
@@ -329,8 +349,9 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
   a client-generated `resource_id` and `base_version: 0`. REST edits from the dashboard also appear in pull.
 - **Realtime/collab**: `POST .../realtime/token {channels?}` -> `{token, expires_in, channels}`; `POST .../collab/rooms/token {room_key}` -> `{token, room_key, expires_in}`
   (JWTs with audience `slinger-realtime` / `slinger-collab`, claims `workspace_id, role, can_write, channels|room_key`; no realtime service is included).
-- **Admin**: `GET /v1/admin/users?q=&platform_role=`, `POST /v1/admin/users {email, display_name, platform_role?, password?}` -> `{user, temporary_password}`
-  (if `password` is omitted a temporary one is generated and shown once), `PATCH /v1/admin/users/{user_id} {display_name?, platform_role?, disabled?}`,
+- **Admin**: `GET /v1/admin/users?q=&platform_role=`, `POST /v1/admin/users {email, display_name, platform_role?, password?, must_change_password?}` -> `{user, temporary_password}`
+  (if `password` is omitted a temporary one is generated, shown once and must be changed at first sign-in), `PATCH /v1/admin/users/{user_id} {display_name?, platform_role?, disabled?, must_change_password?}`,
+  `POST /v1/admin/users/{user_id}/reset-password {}` -> `{user, temporary_password}`,
   `GET /v1/admin/workspaces?q=`, `GET|DELETE /v1/admin/workspaces/{workspace_id}`, `GET /v1/admin/audit-logs?action=&actor_user_id=&workspace_id=`,
   `GET /v1/admin/health` (`{status, services:{api, postgres}, timestamp}`, 503 if the DB is down), `GET /v1/admin/stats`.
 
@@ -406,7 +427,8 @@ operations whose `resulting_version` is newer than what it holds. No tombstones.
 - Auth routes are under `/v1/auth/*` (contract), not `/v1/account/*` (the earlier prototype). `GET /v1/me` is unchanged.
 - Added beyond the contract: `POST /v1/auth/device/approve`, `GET /v1/auth/browser/session`, `POST /v1/me/password`, `DELETE`
   endpoints for content, `PATCH/DELETE` for invites/hosts, `POST .../hosts/{id}/verify`, `PATCH /v1/admin/users/{id}`, `GET /v1/admin/stats`,
-  workspace/admin `audit-logs` ordering option, `disabled` users.
+  workspace/admin `audit-logs` ordering option, `disabled` users, `must_change_password` + `POST /v1/admin/users/{id}/reset-password`,
+  the `denied` device-poll status.
 - The old three-step `/device/identify` + `/device/password` pages are replaced by a single `/device` form (code + email + password).
 - Members are removed softly (`status: removed`, row kept) and can be re-invited.
 - Health: `/healthz` and `/v1/admin/health` report only `api` and `postgres` (no Redis/realtime service exists in this stack).
@@ -418,9 +440,9 @@ operations whose `resulting_version` is newer than what it holds. No tombstones.
   the database clock; keys are SHA-256 hashed, expired rows are swept hourly). The limiter talks to a small `RateLimitStore`
   interface (`src/lib/rateLimitStore.ts`, `hit(key, windowMs)`), so another backend (e.g. Redis) can be injected via
   `buildApp({ rateLimitStore })` without touching the routes. Fixed window, per IP + email; there is no global/IP-only limit.
-- No "must change password" flag: `POST /v1/admin/users` can generate a temporary password, but the account is not forced to change it
-  (users can call `POST /v1/me/password`); that would need a schema field and a login-flow change.
-- `default_role_for_requests` on a workspace is stored and returned but not applied to join requests by the server.
+- No self-service "forgot password" (no email delivery): an admin resets it (`POST /v1/admin/users/{id}/reset-password`). The super
+  admin's password can only be changed by the super admin (`POST /v1/me/password`) or in the database.
+- Password policy is length-only (12-256, different from the current one); no breached-password or complexity check.
 - Sync-log entries for cascaded children are emitted in the same transaction as the parent delete; they carry each child's last
   version. A client that pushes a delete for a cascaded child afterwards gets the normal "already deleted" outcome.
 - No email delivery (invite token is returned in the API response), no TLS provisioning logic in the API (Caddy does it), no realtime service.

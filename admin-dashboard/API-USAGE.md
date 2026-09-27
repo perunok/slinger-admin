@@ -26,7 +26,11 @@ matrix in [`../server/README.md`](../server/README.md).
 | GET | `/auth/browser/session` | none | `{ user, csrf_token }` (boot probe; `401` = signed out) |
 | POST | `/auth/browser/logout` | none | `{ ok: true }`; deletes the server session |
 
-`user` = `{ id, email, display_name, platform_role: super_admin|platform_admin|user }`; admin views add `disabled, created_at, updated_at`.
+| POST | `/me/password` | `{ current_password, new_password }` | `{ ok: true }`. Policy 12-256 chars, different from the current one. Errors: `403 forbidden` + `details.reason: invalid_current_password` (field error on the current password; not a session loss), `400 invalid_request` with `details.issues` on `new_password`, `429 rate_limited` (+ `details.retry_after_seconds`). The server keeps this cookie session (same CSRF token) and signs out every other session, refresh token and access token. Used by `#/account` and the forced "Choose a new password" screen. |
+
+`user` = `{ id, email, display_name, platform_role: super_admin|platform_admin|user, must_change_password }`; admin views add `disabled, created_at, updated_at`.
+While `must_change_password` is true the server serves only `GET /me`, `POST /me/password`, `GET /auth/browser/session` and
+`POST /auth/browser/logout`; everything else is `403 password_change_required`, which switches the dashboard to the forced screen.
 The dashboard does not call `GET /me`.
 
 ## Platform admin (`platform_admin` / `super_admin`)
@@ -36,7 +40,9 @@ The dashboard does not call `GET /me`.
 | GET | `/admin/stats` | none | counters: `users, platform_admins, disabled_users, workspaces, memberships, pending_invites, pending_join_requests, active_sessions, audit_logs, ...` (Overview page) |
 | GET | `/admin/health` | none | `{ status: ok\|degraded, services: { api, postgres }, timestamp }`. `503` carries the **same body** when the DB ping fails; the client accepts it as data (`acceptStatus: [503]`) so the Overview shows the per-service breakdown. A 503 without a valid body (proxy page) is still the generic "temporarily unavailable" error. |
 | GET | `/admin/users` | `cursor, limit, order, q` | page of admin user |
-| POST | `/admin/users` | `{ email, display_name, platform_role: user\|platform_admin, password? }` | `201 { user, temporary_password }`. Password >= 12 chars. The dashboard offers **Generate a temporary password** (default: `password` is omitted, the server returns `temporary_password` once and the dialog shows it once with a copy button) or **Set a password manually** (sends `password`, `temporary_password` is `null`). The server has no "require password change" flag, so the dashboard does not offer one. `platform_admin` needs super admin; `super_admin` can never be created via the API. |
+| POST | `/admin/users` | `{ email, display_name, platform_role: user\|platform_admin, password?, must_change_password }` | `201 { user, temporary_password }`. Password 12-256 chars. The dashboard offers **Generate a temporary password** (default: `password` is omitted, the server returns `temporary_password` once and the dialog shows it once with a copy button; `must_change_password` is always true) or **Set a password manually** (sends `password`, `temporary_password` is `null`; "Require a password change at first sign-in" defaults to on). `platform_admin` needs super admin; `super_admin` can never be created via the API. |
+| PATCH | `/admin/users/{id}` | `{ must_change_password: true\|false }` | `{ user }`. The "Must change" checkbox on the Users page; same guard rails as disabling. |
+| POST | `/admin/users/{id}/reset-password` | `{}` | `{ user, temporary_password }`. "Reset password" (after confirmation); the temporary password is shown once, the user is signed out everywhere and must change it at next sign-in. Not for yourself, never the super admin, other admins only by the super admin. |
 | PATCH | `/admin/users/{id}` | `{ platform_role }` (role change: super admin only; the super admin's role is fixed) | `{ user }` |
 | PATCH | `/admin/users/{id}` | `{ disabled: true\|false }` (also accepts `display_name`) | `{ user }` (`disabled` in the admin view). Platform admins may disable/enable ordinary users, only the super admin may touch other admins; nobody can disable themselves and the super admin can never be disabled (`403 forbidden`, message shown in the confirm dialog). Disabling revokes all dashboard sessions and refresh tokens; enabling does not restore them. |
 | GET | `/admin/workspaces` | `cursor, limit, order, q` | page of workspace (+ `member_count`) |
@@ -58,7 +64,7 @@ The dashboard does not call `GET /me`.
 | POST | `/workspaces/{id}/invites` | `{ email, role }` | `201 { invite, invite_token }`. The raw token is shown **once**. Accepting needs the invite **id and** the token (`POST /v1/invites/{id}/accept {invite_token}` as the invited user), so the dashboard shows both. |
 | DELETE | `/workspaces/{id}/invites/{invite_id}` | none | `{ invite }` (status `revoked`) |
 | GET | `/workspaces/{id}/join-requests` | `cursor, limit, order, status` | page of `{ id, requester_user_id, requester_email, requester_display_name, message, status, requested_role, version }` |
-| POST | `.../join-requests/{id}/approve` | `{ role, version }` | `{ membership }` |
+| POST | `.../join-requests/{id}/approve` | `{ role, version }` | `{ membership }`. The role select preselects the workspace's `default_role_for_requests` (what the server grants when `role` is omitted) and offers only roles up to the approver's own. |
 | POST | `.../join-requests/{id}/reject` | `{ version }` | `{ join_request }` |
 | GET | `/workspaces/{id}/hosts` | `cursor, limit, order` | page of host; pending hosts carry `verification: { dns_record_type: "TXT", dns_record_name, dns_record_value }` (owner / platform admin) |
 | POST | `/workspaces/{id}/hosts` | `{ host, kind: custom_domain\|dedicated_subdomain }` | `201 { host, verification \| null }` |
@@ -68,7 +74,8 @@ The dashboard does not call `GET /me`.
 
 Audit log entry: `{ id, actor_user_id, actor_email, action, resource_type, resource_id, workspace_id, request_id, details, created_at }`.
 Actions are dotted: `workspace.created|updated|deleted|published`, `member.role_changed|removed`, `invite.created|revoked|accepted`,
-`join_request.approved|rejected`, `host.added|verified|removed`, `admin.user_created|user_updated|user_role_changed|workspace_deleted`.
+`join_request.approved|rejected`, `host.added|verified|removed`, `admin.user_created|user_updated|user_role_changed|user_password_reset|workspace_deleted`,
+`user.password_changed`.
 The filter list lives in `src/lib/components/AuditTable.svelte`.
 
 ## UI-side authorization
@@ -79,4 +86,4 @@ changed by the super admin and never include a second `super_admin`. Workspace s
 
 ## Not used by the dashboard
 
-`PATCH /admin/users` `display_name`, `GET /admin/workspaces/{id}`, `DELETE /admin/workspaces/{id}`, `POST /me/password`, content/sync/realtime routes.
+`PATCH /admin/users` `display_name`, `GET /admin/workspaces/{id}`, `DELETE /admin/workspaces/{id}`, `GET /me`, `POST /auth/device/approve`, content/sync/realtime routes.

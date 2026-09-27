@@ -118,6 +118,9 @@ jobs:
       - run: npm --prefix server ci
       - run: npm --prefix admin-dashboard ci
       - run: npm --prefix e2e ci
+      # run.mjs starts the server from source; npm ci does not generate the Prisma client.
+      - run: npx prisma generate
+        working-directory: server
       - run: npx playwright install --with-deps chromium
         working-directory: e2e
       - run: npm run e2e

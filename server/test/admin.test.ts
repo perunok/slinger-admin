@@ -24,7 +24,7 @@ describe("admin users", () => {
     expect((await call(app, { method: "GET", url: "/v1/admin/users" })).statusCode).toBe(401);
     const res = await call(app, { method: "GET", url: `/v1/admin/users?limit=2&q=${encodeURIComponent(plain.email.slice(0, 8))}`, as: pa });
     expect(res.statusCode).toBe(200);
-    expect(res.body).not.toContain("password");
+    expect(res.body).not.toMatch(/password_hash|passwordHash|argon2|"password"/);
     const page1 = j(await call(app, { method: "GET", url: "/v1/admin/users?limit=2", as: pa }));
     expect(page1.items).toHaveLength(2);
     expect(page1.page.has_more).toBe(true);
@@ -77,7 +77,8 @@ describe("admin users", () => {
     expect((await call(app, { method: "GET", url: "/v1/me", as: victim })).statusCode).toBe(401);
     expect(await prisma.session.count({ where: { userId: victim.id } })).toBe(0);
     expect((await call(app, { method: "PATCH", url: `/v1/admin/users/${victim.id}`, as: pa, body: { disabled: false } })).statusCode).toBe(200);
-    expect((await call(app, { method: "GET", url: "/v1/me", as: victim })).statusCode).toBe(200);
+    // re-enabling does not resurrect access tokens issued before the disable (tokenVersion was bumped)
+    expect((await call(app, { method: "GET", url: "/v1/me", as: victim })).statusCode).toBe(401);
     const roleLog = j(await call(app, { method: "GET", url: "/v1/admin/audit-logs?action=admin.user_role_changed&order=desc&limit=1", as: sa })).items[0];
     expect(roleLog).toMatchObject({ actor_user_id: sa.id, resource_id: target.id });
   });

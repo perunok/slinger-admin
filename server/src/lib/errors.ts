@@ -12,6 +12,7 @@ export type ErrorCode =
   | "sync_conflict"
   | "csrf_invalid"
   | "origin_not_allowed"
+  | "password_change_required"
   | "internal_error";
 
 const statusByCode: Record<ErrorCode, number> = {
@@ -28,6 +29,7 @@ const statusByCode: Record<ErrorCode, number> = {
   sync_conflict: 409,
   csrf_invalid: 403,
   origin_not_allowed: 403,
+  password_change_required: 403,
   internal_error: 500
 };
 

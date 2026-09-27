@@ -28,6 +28,9 @@ function assertSuperAdmin(req: FastifyRequest, what: string): void {
   }
 }
 
+/** 20 random characters (120 bits), URL-safe. Only ever returned once and never logged. */
+const temporaryPassword = () => randomBytes(15).toString("base64url");
+
 const auditFilters = z.object({
   action: z.string().max(100).optional(),
   actor_user_id: id.optional()
@@ -71,7 +74,9 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     url: "/v1/admin/users",
     summary: "Create/onboard a user. Creating a platform_admin requires super_admin.",
     description:
-      "If `password` is omitted a random temporary password is generated and returned ONCE in `temporary_password`. " +
+      "If `password` is omitted a random temporary password is generated and returned ONCE in `temporary_password`; such " +
+      "accounts always get `must_change_password: true` (sending `must_change_password: false` with a generated password is a 400). " +
+      "With an explicit `password`, `must_change_password` defaults to false. " +
       "`super_admin` cannot be created through the API (the single super admin comes from SLINGER_ADMIN_BOOTSTRAP).",
     access: `${ADMIN}; platform_role=platform_admin needs ${SUPER}`,
     tags: ["Admin"],
@@ -82,25 +87,35 @@ export function registerAdminRoutes(app: FastifyInstance): void {
         email: emailSchema,
         display_name: z.string().trim().min(1).max(100),
         platform_role: z.enum(["platform_admin", "user"]).default("user"),
-        password: newPasswordSchema.optional()
+        password: newPasswordSchema.optional(),
+        must_change_password: z.boolean().optional()
       })
-      .strict(),
+      .strict()
+      .refine((b) => b.password !== undefined || b.must_change_password !== false, {
+        path: ["must_change_password"],
+        message: "a generated temporary password must be changed at first sign-in"
+      }),
     responses: { 201: z.object({ user: adminUserSchema, temporary_password: z.string().nullable() }) },
     errors: [400, 401, 403, 409],
     handler: async ({ req, body }) => {
       if (body.platform_role !== "user") assertSuperAdmin(req, "creating platform admins");
-      const password = body.password ?? randomBytes(15).toString("base64url");
+      const password = body.password ?? temporaryPassword();
+      const mustChangePassword = body.password === undefined || body.must_change_password === true;
       const passwordHash = await hashPassword(password);
       const user = await prisma.$transaction(async (tx) => {
         const u = await tx.user.create({
           data: {
             id: newId(), email: body.email, displayName: body.display_name, passwordHash,
-            platformRole: body.platform_role
+            platformRole: body.platform_role, mustChangePassword
           }
         });
         await writeAuditLog(tx, {
           actorUserId: req.auth!.user.id, action: "admin.user_created", resourceType: "user", resourceId: u.id,
-          requestId: req.id, details: { email: u.email, platform_role: u.platformRole }
+          requestId: req.id,
+          details: {
+            email: u.email, platform_role: u.platformRole, must_change_password: mustChangePassword,
+            password: body.password === undefined ? "generated" : "set_by_admin"
+          }
         });
         return u;
       });
@@ -111,10 +126,13 @@ export function registerAdminRoutes(app: FastifyInstance): void {
   defineRoute(app, {
     method: "PATCH",
     url: "/v1/admin/users/:userId",
-    summary: "Update a user's display name, platform role or disabled state",
+    summary: "Update a user's display name, platform role, disabled state or must-change-password flag",
     description:
       "Changing `platform_role`, or modifying/disabling any platform admin, requires super_admin. " +
-      "The super admin's role cannot change and nobody can disable themselves. Disabling revokes all sessions and refresh tokens.",
+      "The super admin's role cannot change and nobody can disable themselves. Disabling revokes all sessions, refresh tokens " +
+      "and access tokens. `must_change_password: true` makes every route except GET /v1/me, POST /v1/me/password and logout " +
+      "answer `403 password_change_required` for that user (existing sessions included) until they change their password; " +
+      "`false` lifts the requirement.",
     access: `${ADMIN} for regular users; ${SUPER} for roles and for other admins`,
     tags: ["Admin"],
     auth: "user",
@@ -124,7 +142,8 @@ export function registerAdminRoutes(app: FastifyInstance): void {
       .object({
         display_name: z.string().trim().min(1).max(100).optional(),
         platform_role: z.enum(["platform_admin", "user"]).optional(),
-        disabled: z.boolean().optional()
+        disabled: z.boolean().optional(),
+        must_change_password: z.boolean().optional()
       })
       .strict(),
     responses: { 200: z.object({ user: adminUserSchema }) },
@@ -146,7 +165,8 @@ export function registerAdminRoutes(app: FastifyInstance): void {
           data: {
             ...(body.display_name !== undefined && { displayName: body.display_name }),
             ...(body.platform_role !== undefined && { platformRole: body.platform_role }),
-            ...(body.disabled !== undefined && { disabledAt: body.disabled ? new Date() : null })
+            ...(body.disabled !== undefined && { disabledAt: body.disabled ? new Date() : null }),
+            ...(body.must_change_password !== undefined && { mustChangePassword: body.must_change_password })
           }
         });
         if (body.disabled === true) await revokeAllUserCredentials(tx, target.id);
@@ -159,6 +179,44 @@ export function registerAdminRoutes(app: FastifyInstance): void {
         return u;
       });
       return { user: toAdminUser(updated) };
+    }
+  });
+
+  defineRoute(app, {
+    method: "POST",
+    url: "/v1/admin/users/:userId/reset-password",
+    summary: "Reset a user's password to a new temporary one (returned once) that must be changed at next sign-in",
+    description:
+      "Generates a random temporary password (returned ONCE in `temporary_password`), sets `must_change_password`, and signs " +
+      "the user out everywhere (dashboard sessions, refresh tokens and access tokens). Same authorization as PATCH: platform " +
+      "admins may reset regular users, only the super admin may reset another platform admin; nobody resets their own password " +
+      "here (use POST /v1/me/password), so the super admin's password cannot be reset through the API.",
+    access: `${ADMIN} for regular users; ${SUPER} for other admins; never yourself`,
+    tags: ["Admin"],
+    auth: "user",
+    pre: [platformAdmins],
+    params: z.object({ userId: id }),
+    body: z.object({}).strict(),
+    responses: { 200: z.object({ user: adminUserSchema, temporary_password: z.string() }) },
+    errors: [400, 401, 403, 404],
+    handler: async ({ req, params }) => {
+      const actor = req.auth!.user;
+      const target = await prisma.user.findUnique({ where: { id: params.userId } });
+      if (!target) throw new AppError("not_found", "user not found");
+      if (target.id === actor.id) throw new AppError("forbidden", "use POST /v1/me/password to change your own password");
+      if (target.platformRole !== "user") assertSuperAdmin(req, "resetting a platform admin's password");
+      const password = temporaryPassword();
+      const passwordHash = await hashPassword(password);
+      const updated = await prisma.$transaction(async (tx) => {
+        await tx.user.update({ where: { id: target.id }, data: { passwordHash, mustChangePassword: true } });
+        await revokeAllUserCredentials(tx, target.id);
+        await writeAuditLog(tx, {
+          actorUserId: actor.id, action: "admin.user_password_reset", resourceType: "user", resourceId: target.id,
+          requestId: req.id, details: { email: target.email, must_change_password: true }
+        });
+        return tx.user.findUniqueOrThrow({ where: { id: target.id } });
+      });
+      return { user: toAdminUser(updated), temporary_password: password };
     }
   });
 

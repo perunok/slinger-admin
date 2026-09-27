@@ -108,13 +108,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "429":
           description: Rate limited
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-      description: Rate limited per IP+email pair like the login endpoints.
+      description: Rate limited per IP+email pair like the login endpoints. Accounts that must change an admin-issued password are refused (403 page with instructions) until they have done so in the dashboard.
       requestBody:
         required: true
         content:
@@ -169,11 +181,14 @@ paths:
                           - super_admin
                           - platform_admin
                           - user
+                      must_change_password:
+                        type: boolean
                     required:
                       - id
                       - email
                       - display_name
                       - platform_role
+                      - must_change_password
                     additionalProperties: false
                   csrf_token:
                     type: string
@@ -319,6 +334,23 @@ paths:
                     additionalProperties: false
                   - type: object
                     properties:
+                      status:
+                        type: string
+                        enum:
+                          - denied
+                      reason:
+                        type: string
+                        enum:
+                          - password_change_required
+                      message:
+                        type: string
+                    required:
+                      - status
+                      - reason
+                      - message
+                    additionalProperties: false
+                  - type: object
+                    properties:
                       access_token:
                         type: string
                       refresh_token:
@@ -348,11 +380,14 @@ paths:
                               - super_admin
                               - platform_admin
                               - user
+                          must_change_password:
+                            type: boolean
                         required:
                           - id
                           - email
                           - display_name
                           - platform_role
+                          - must_change_password
                         additionalProperties: false
                     required:
                       - access_token
@@ -374,6 +409,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+      description: "`denied` (reason `password_change_required`) means the approving account must change its admin-issued password first; the flow is finished and no tokens are issued."
       requestBody:
         required: true
         content:
@@ -501,7 +537,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-      description: Binds the pending device flow with this `user_code` to the caller. Cookie callers must send X-CSRF-Token.
+      description: Binds the pending device flow with this `user_code` to the caller. Cookie callers must send X-CSRF-Token. Refused with `403 password_change_required` while the caller must change their password.
       requestBody:
         required: true
         content:
@@ -595,6 +631,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+      description: Also usable while the account must change its password (`must_change_password`); every route without this note answers `403 password_change_required` then.
   /v1/auth/browser/session:
     get:
       operationId: getV1AuthBrowserSession
@@ -628,11 +665,14 @@ paths:
                           - super_admin
                           - platform_admin
                           - user
+                      must_change_password:
+                        type: boolean
                     required:
                       - id
                       - email
                       - display_name
                       - platform_role
+                      - must_change_password
                     additionalProperties: false
                   csrf_token:
                     type: string
@@ -652,7 +692,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-      description: The CSRF token is HMAC-derived from the session id, so it can be re-issued without rotating. Only readable by allowlisted/same origins (CORS).
+      description: |-
+        The CSRF token is HMAC-derived from the session id, so it can be re-issued without rotating. Only readable by allowlisted/same origins (CORS).
+
+        Also usable while the account must change its password (`must_change_password`); every route without this note answers `403 password_change_required` then.
   /v1/me:
     get:
       operationId: getV1Me
@@ -686,11 +729,14 @@ paths:
                           - super_admin
                           - platform_admin
                           - user
+                      must_change_password:
+                        type: boolean
                     required:
                       - id
                       - email
                       - display_name
                       - platform_role
+                      - must_change_password
                     additionalProperties: false
                   workspace_memberships:
                     type: array
@@ -720,10 +766,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+      description: Also usable while the account must change its password (`must_change_password`); every route without this note answers `403 password_change_required` then.
   /v1/me/password:
     post:
       operationId: postV1MePassword
-      summary: Change own password; revokes all refresh tokens and dashboard sessions
+      summary: Change own password; signs out every other session and device
       tags:
         - Auth
       security:
@@ -763,6 +810,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      description: |-
+        Policy: 12-256 characters and different from the current password. A wrong `current_password` answers `403 forbidden` with `details.reason: invalid_current_password`. Rate limited per user like the login endpoints (`429 rate_limited`, `Retry-After`). On success `must_change_password` is cleared, every refresh token is revoked, every access token issued so far stops working and every dashboard session except the caller's own cookie session is deleted (a Bearer caller must sign in again).
+
+        Also usable while the account must change its password (`must_change_password`); every route without this note answers `403 password_change_required` then.
       requestBody:
         required: true
         content:
@@ -6652,6 +6709,8 @@ paths:
                             - super_admin
                             - platform_admin
                             - user
+                        must_change_password:
+                          type: boolean
                         disabled:
                           type: boolean
                         created_at:
@@ -6665,6 +6724,7 @@ paths:
                         - email
                         - display_name
                         - platform_role
+                        - must_change_password
                         - disabled
                         - created_at
                         - updated_at
@@ -6777,6 +6837,8 @@ paths:
                           - super_admin
                           - platform_admin
                           - user
+                      must_change_password:
+                        type: boolean
                       disabled:
                         type: boolean
                       created_at:
@@ -6790,6 +6852,7 @@ paths:
                       - email
                       - display_name
                       - platform_role
+                      - must_change_password
                       - disabled
                       - created_at
                       - updated_at
@@ -6826,7 +6889,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
       description: |-
-        If `password` is omitted a random temporary password is generated and returned ONCE in `temporary_password`. `super_admin` cannot be created through the API (the single super admin comes from SLINGER_ADMIN_BOOTSTRAP).
+        If `password` is omitted a random temporary password is generated and returned ONCE in `temporary_password`; such accounts always get `must_change_password: true` (sending `must_change_password: false` with a generated password is a 400). With an explicit `password`, `must_change_password` defaults to false. `super_admin` cannot be created through the API (the single super admin comes from SLINGER_ADMIN_BOOTSTRAP).
 
         **Access:** platform_admin or super_admin; platform_role=platform_admin needs super_admin only.
       requestBody:
@@ -6854,6 +6917,8 @@ paths:
                   type: string
                   minLength: 12
                   maxLength: 256
+                must_change_password:
+                  type: boolean
               required:
                 - email
                 - display_name
@@ -6862,7 +6927,7 @@ paths:
   /v1/admin/users/{userId}:
     patch:
       operationId: patchV1AdminUsersUserId
-      summary: Update a user's display name, platform role or disabled state
+      summary: Update a user's display name, platform role, disabled state or must-change-password flag
       tags:
         - Admin
       security:
@@ -6892,6 +6957,8 @@ paths:
                           - super_admin
                           - platform_admin
                           - user
+                      must_change_password:
+                        type: boolean
                       disabled:
                         type: boolean
                       created_at:
@@ -6905,6 +6972,7 @@ paths:
                       - email
                       - display_name
                       - platform_role
+                      - must_change_password
                       - disabled
                       - created_at
                       - updated_at
@@ -6937,7 +7005,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
       description: |-
-        Changing `platform_role`, or modifying/disabling any platform admin, requires super_admin. The super admin's role cannot change and nobody can disable themselves. Disabling revokes all sessions and refresh tokens.
+        Changing `platform_role`, or modifying/disabling any platform admin, requires super_admin. The super admin's role cannot change and nobody can disable themselves. Disabling revokes all sessions, refresh tokens and access tokens. `must_change_password: true` makes every route except GET /v1/me, POST /v1/me/password and logout answer `403 password_change_required` for that user (existing sessions included) until they change their password; `false` lifts the requirement.
 
         **Access:** platform_admin or super_admin for regular users; super_admin only for roles and for other admins.
       parameters:
@@ -6966,8 +7034,114 @@ paths:
                     - user
                 disabled:
                   type: boolean
+                must_change_password:
+                  type: boolean
               additionalProperties: false
       x-access: platform_admin or super_admin for regular users; super_admin only for roles and for other admins
+  /v1/admin/users/{userId}/reset-password:
+    post:
+      operationId: postV1AdminUsersUserIdResetPassword
+      summary: Reset a user's password to a new temporary one (returned once) that must be changed at next sign-in
+      tags:
+        - Admin
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+          csrfToken: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      email:
+                        type: string
+                      display_name:
+                        type: string
+                      platform_role:
+                        type: string
+                        enum:
+                          - super_admin
+                          - platform_admin
+                          - user
+                      must_change_password:
+                        type: boolean
+                      disabled:
+                        type: boolean
+                      created_at:
+                        type: string
+                        format: date-time
+                      updated_at:
+                        type: string
+                        format: date-time
+                    required:
+                      - id
+                      - email
+                      - display_name
+                      - platform_role
+                      - must_change_password
+                      - disabled
+                      - created_at
+                      - updated_at
+                    additionalProperties: false
+                  temporary_password:
+                    type: string
+                required:
+                  - user
+                  - temporary_password
+                additionalProperties: false
+        "400":
+          description: Invalid request (zod validation failed, malformed JSON, bad cursor)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      description: |-
+        Generates a random temporary password (returned ONCE in `temporary_password`), sets `must_change_password`, and signs the user out everywhere (dashboard sessions, refresh tokens and access tokens). Same authorization as PATCH: platform admins may reset regular users, only the super admin may reset another platform admin; nobody resets their own password here (use POST /v1/me/password), so the super admin's password cannot be reset through the API.
+
+        **Access:** platform_admin or super_admin for regular users; super_admin only for other admins; never yourself.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              additionalProperties: false
+      x-access: platform_admin or super_admin for regular users; super_admin only for other admins; never yourself
   /v1/admin/workspaces:
     get:
       operationId: getV1AdminWorkspaces
@@ -7786,6 +7960,7 @@ components:
                 - sync_conflict
                 - csrf_invalid
                 - origin_not_allowed
+                - password_change_required
                 - internal_error
             message:
               type: string

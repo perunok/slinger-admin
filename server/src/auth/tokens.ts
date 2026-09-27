@@ -12,10 +12,14 @@ export type PublicUser = {
   email: string;
   display_name: string;
   platform_role: string;
+  must_change_password: boolean;
 };
 
-export function publicUser(u: Pick<User, "id" | "email" | "displayName" | "platformRole">): PublicUser {
-  return { id: u.id, email: u.email, display_name: u.displayName, platform_role: u.platformRole };
+export function publicUser(u: Pick<User, "id" | "email" | "displayName" | "platformRole" | "mustChangePassword">): PublicUser {
+  return {
+    id: u.id, email: u.email, display_name: u.displayName, platform_role: u.platformRole,
+    must_change_password: u.mustChangePassword
+  };
 }
 
 export type TokenPair = {
@@ -37,7 +41,7 @@ export async function issueTokenPair(cfg: AppConfig, db: Tx, user: User): Promis
   });
   const access = await signAccessToken(
     cfg.signingSecret,
-    { sub: user.id, platform_role: user.platformRole },
+    { sub: user.id, platform_role: user.platformRole, tv: user.tokenVersion },
     cfg.accessTokenTtlSeconds
   );
   return { access_token: access, refresh_token: refresh, expires_in: cfg.accessTokenTtlSeconds, token_type: "Bearer" };
@@ -67,7 +71,13 @@ export async function rotateRefreshToken(cfg: AppConfig, prisma: PrismaClient, p
   });
 }
 
-export async function revokeAllUserCredentials(db: Tx, userId: string): Promise<void> {
+/**
+ * Signs the user out everywhere: revokes every refresh token, deletes dashboard sessions (except `keepSessionId`, the
+ * caller's own session after a self-service password change) and bumps `tokenVersion`, which invalidates every access
+ * token issued so far. Used for password change/reset and disabling.
+ */
+export async function revokeAllUserCredentials(db: Tx, userId: string, opts: { keepSessionId?: string } = {}): Promise<void> {
   await db.refreshToken.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } });
-  await db.session.deleteMany({ where: { userId } });
+  await db.session.deleteMany({ where: { userId, ...(opts.keepSessionId && { id: { not: opts.keepSessionId } }) } });
+  await db.user.update({ where: { id: userId }, data: { tokenVersion: { increment: 1 } } });
 }

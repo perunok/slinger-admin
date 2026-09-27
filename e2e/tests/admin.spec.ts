@@ -73,6 +73,9 @@ test('users: create users, change a platform role (super admin) and see it persi
     await dlg.getByLabel('Display name').fill(u.display_name);
     await dlg.getByLabel('Set a password manually').check();
     await dlg.getByLabel('Initial password').fill(u.password);
+    // these accounts are used right away by later tests, so no forced change (default is on)
+    await expect(dlg.getByLabel('Require a password change at first sign-in')).toBeChecked();
+    await dlg.getByLabel('Require a password change at first sign-in').uncheck();
     await dlg.getByRole('button', { name: 'Create user' }).click();
     await expect(toast(page, 'User created')).toBeVisible();
     await expect(page.getByText(u.email, { exact: true })).toBeVisible();
@@ -108,6 +111,8 @@ test('users: generated temporary password is shown once; disable revokes session
   const dlg = page.getByRole('dialog');
   await expect(dlg.getByLabel('Generate a temporary password')).toBeChecked();
   await expect(dlg.getByLabel('Initial password')).toHaveCount(0);
+  await expect(dlg.getByLabel('Require a password change at first sign-in')).toBeChecked();
+  await expect(dlg.getByLabel('Require a password change at first sign-in')).toBeDisabled();
   await dlg.getByLabel('Email').fill(erin.email);
   await dlg.getByLabel('Display name').fill(erin.display_name);
   await dlg.getByRole('button', { name: 'Create user' }).click();
@@ -155,6 +160,99 @@ test('users: generated temporary password is shown once; disable revokes session
   await expect(page.getByRole('row', { name: new RegExp(erin.email) }).getByText('Disabled', { exact: true })).toHaveCount(0);
   expect((await relogin.post('/v1/auth/browser/login', { data: { email: erin.email, password: temp } })).status()).toBe(200);
   expect((await erinApi.ctx.get('/v1/auth/browser/session')).status()).toBe(401);
+});
+
+test('forced password change: temporary password -> "choose a new password" -> dashboard; reset signs out everywhere', async ({ page, browser }) => {
+  const frank = person('frank');
+  // the admin creates frank with a generated temporary password
+  await uiLogin(page, env.admin.email, env.admin.password, '/#/users');
+  await page.getByRole('button', { name: 'Create user' }).click();
+  const dlg = page.getByRole('dialog');
+  await dlg.getByLabel('Email').fill(frank.email);
+  await dlg.getByLabel('Display name').fill(frank.display_name);
+  await dlg.getByRole('button', { name: 'Create user' }).click();
+  const temp = (await dlg.getByLabel('Temporary password', { exact: true }).textContent())!.trim();
+  await dlg.getByRole('button', { name: 'Done' }).click();
+  await expect(page.getByLabel(`Require password change for ${frank.email}`)).toBeChecked();
+
+  // with the temporary password the API only allows /me, /me/password and logout; desktop sign-in is refused
+  const frankApi = await apiLogin(frank.email, temp);
+  expect(frankApi.user).toMatchObject({ must_change_password: true });
+  const blocked = await frankApi.ctx.get('/v1/workspaces');
+  expect(blocked.status()).toBe(403);
+  expect((await blocked.json()).error.code).toBe('password_change_required');
+  const start = await (await frankApi.ctx.post('/v1/auth/device/start', { data: { client_name: 'e2e', device_name: 'e2e box' } })).json();
+  const device = await frankApi.ctx.post('/device', { form: { user_code: start.user_code, email: frank.email, password: temp } });
+  expect(device.status()).toBe(403);
+  expect(await device.text()).toContain('must be changed before you can sign in to the desktop app');
+
+  // frank signs in to the dashboard and lands on the forced screen
+  const ctx = await browser.newContext({ baseURL: env.ui });
+  const fp = await ctx.newPage();
+  await fp.goto('/#/workspaces');
+  await fp.getByLabel('Email').fill(frank.email);
+  await fp.getByLabel('Password').fill(temp);
+  await fp.getByRole('button', { name: 'Sign in' }).click();
+  await expect(fp.getByRole('heading', { name: 'Choose a new password' })).toBeVisible();
+  await expect(fp.getByRole('navigation', { name: 'Main' })).toHaveCount(0);
+  await expect(fp.getByText('At least 12 characters (at most 256).')).toBeVisible();
+  await fp.reload(); // still forced after a reload
+  await expect(fp.getByRole('heading', { name: 'Choose a new password' })).toBeVisible();
+
+  // wrong temporary password and a too-short one are explained; then the change goes through
+  await fp.getByLabel('Temporary password').fill('not-the-temporary-one');
+  await fp.getByLabel('New password', { exact: true }).fill(frank.password);
+  await fp.getByLabel('Confirm new password').fill(frank.password);
+  await fp.getByRole('button', { name: 'Set new password' }).click();
+  await expect(fp.getByText('The temporary password is incorrect.')).toBeVisible();
+  await fp.getByLabel('Temporary password').fill(temp);
+  await fp.getByRole('button', { name: 'Set new password' }).click();
+  await expect(fp.getByRole('navigation', { name: 'Main' })).toBeVisible();
+  await expect(toast(fp, /Password changed/)).toBeVisible();
+  await fp.reload(); // this browser's session was kept
+  await expect(fp.getByRole('link', { name: 'Workspaces' })).toBeVisible();
+
+  // the other session (frankApi) was signed out; the old password is gone, the new one works; desktop sign-in works now
+  expect((await frankApi.ctx.get('/v1/auth/browser/session')).status()).toBe(401);
+  const anon = await (await import('@playwright/test')).request.newContext({ baseURL: env.api });
+  expect((await anon.post('/v1/auth/browser/login', { data: { email: frank.email, password: temp } })).status()).toBe(401);
+  const approved = await anon.post('/device', { form: { user_code: start.user_code, email: frank.email, password: frank.password } });
+  expect(approved.status()).toBe(200);
+  expect((await (await anon.post('/v1/auth/device/poll', { data: { device_code: start.device_code } })).json()).status).toBe('approved');
+
+  // the account page changes the password again (from the user menu)
+  await fp.getByRole('link', { name: new RegExp(frank.display_name) }).click();
+  await expect(fp.getByRole('heading', { name: 'Account' })).toBeVisible();
+  await fp.getByLabel('Current password').fill(frank.password);
+  await fp.getByLabel('New password', { exact: true }).fill(`${frank.password}-2`);
+  await fp.getByLabel('Confirm new password').fill(`${frank.password}-2`);
+  await fp.getByRole('button', { name: 'Change password' }).click();
+  await expect(toast(fp, /Password changed/)).toBeVisible();
+
+  // the admin sees the flag cleared, then resets the password: frank is signed out everywhere and forced again
+  await page.reload();
+  await expect(page.getByLabel(`Require password change for ${frank.email}`)).not.toBeChecked();
+  await page.getByRole('button', { name: `Reset password for ${frank.email}` }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Reset password' }).click();
+  const temp2 = (await page.getByTestId('reset-password').getByLabel('Temporary password', { exact: true }).textContent())!.trim();
+  expect(temp2).not.toBe(temp);
+  await page.getByRole('button', { name: 'Done' }).click();
+  await expect(page.getByLabel(`Require password change for ${frank.email}`)).toBeChecked();
+  await fp.reload();
+  await expect(fp.getByRole('button', { name: 'Sign in' })).toBeVisible();
+  await fp.getByLabel('Email').fill(frank.email);
+  await fp.getByLabel('Password').fill(temp2);
+  await fp.getByRole('button', { name: 'Sign in' }).click();
+  await expect(fp.getByRole('heading', { name: 'Choose a new password' })).toBeVisible();
+  await fp.getByRole('button', { name: 'Sign out' }).click();
+  await expect(fp.getByRole('button', { name: 'Sign in' })).toBeVisible();
+  await ctx.close();
+
+  // audited
+  const logs = await (await adminApi.ctx.get('/v1/admin/audit-logs?order=desc&limit=20')).json();
+  const actions = logs.items.map((l: { action: string }) => l.action);
+  expect(actions).toEqual(expect.arrayContaining(['admin.user_password_reset', 'user.password_changed']));
+  expect(JSON.stringify(logs)).not.toContain(temp2);
 });
 
 test('workspaces: create, duplicate slug is refused', async ({ page }) => {
@@ -241,6 +339,8 @@ test('join requests: approve one (with role), reject another', async ({ page }) 
   await expect(page.getByText(`hello from ${dave.display_name}`)).toBeVisible();
 
   const carolRow = page.getByRole('row', { name: new RegExp(carol.display_name) });
+  // the workspace default (viewer) is preselected, not the requested role
+  await expect(carolRow.getByRole('combobox')).toHaveValue('viewer');
   await carolRow.getByRole('combobox').selectOption('editor');
   await page.getByRole('button', { name: `Approve ${carol.display_name}` }).click();
   await expect(toast(page, `Approved ${carol.display_name} as Editor`)).toBeVisible();

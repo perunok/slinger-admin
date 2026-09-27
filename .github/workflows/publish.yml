@@ -50,7 +50,10 @@ jobs:
             exit 1
           fi
       - uses: actions/checkout@v4
+      # A current QEMU for the arm64 half of the build (the runner's default emulator is older).
       - uses: docker/setup-qemu-action@v3
+        with:
+          image: tonistiigi/binfmt:latest
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:

@@ -1,4 +1,6 @@
-import type { Collection, CollectionVersion, Environment, EnvironmentVariable, Folder, Prisma, Request as RequestRow } from "@prisma/client";
+import type {
+  Collection, CollectionVariable, CollectionVersion, Environment, EnvironmentVariable, Folder, GlobalVariable, Prisma, Request as RequestRow
+} from "@prisma/client";
 import { z } from "zod";
 import { AppError } from "../lib/errors.js";
 import { newId } from "../lib/ids.js";
@@ -23,6 +25,13 @@ export const NAME_MAX = 200;
 export const REQUEST_NAME_MAX = 500;
 export const DOCUMENT_JSON_MAX_BYTES = 900_000;
 export const SNAPSHOT_JSON_MAX_BYTES = 8_000_000;
+/** Collection/folder scripts and documentation (sync features `folder_scripts`, `docs`): the desktop's own input caps. */
+export const SCRIPTS_JSON_MAX_BYTES = 2 * 1024 * 1024;
+export const DESCRIPTION_MAX_BYTES = 2 * 1024 * 1024;
+/** Collection variables and globals (sync features `collection_variables`, `globals`): the desktop's own input caps. */
+export const SYNC_VAR_KEY_MAX = 256;
+export const SYNC_VAR_VALUE_MAX = 1_000_000;
+export const SYNC_VAR_DESCRIPTION_MAX = 100_000;
 const SORT_ORDER_MAX = 2_000_000_000;
 
 const name = z.string().trim().min(1).max(NAME_MAX);
@@ -54,6 +63,65 @@ export const variableValue = z.string().max(65_536);
 
 export const collectionData = z.object({ name });
 export const folderData = z.object({ parent_folder_id: uuidish.nullable().optional(), name, sort_order: sortOrder.optional() });
+
+/** Postman `event` array as JSON text (collection/folder scripts), or null for none. */
+const scriptsJson = z
+  .string()
+  .superRefine(maxBytes(SCRIPTS_JSON_MAX_BYTES, "scripts_json"))
+  .superRefine((s, ctx) => {
+    let v: unknown;
+    try {
+      v = JSON.parse(s);
+    } catch {
+      /* reported below */
+    }
+    if (!Array.isArray(v)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "scripts_json must be a JSON array (Postman event list)" });
+  })
+  .nullable();
+const descriptionText = z.string().superRefine(maxBytes(DESCRIPTION_MAX_BYTES, "description")).nullable();
+const descriptionType = z.enum(["text/markdown", "text/plain"]).nullable();
+/**
+ * Sync-only extras of collections and folders. Absent = unchanged, so clients that do not know them (desktop <= 0.6,
+ * REST) never wipe them.
+ */
+const containerExtras = {
+  scripts_json: scriptsJson.optional(),
+  description: descriptionText.optional(),
+  description_type: descriptionType.optional()
+};
+export const syncCollectionData = collectionData.extend(containerExtras);
+export const syncFolderData = folderData.extend(containerExtras);
+type ContainerExtras = { scripts_json?: string | null; description?: string | null; description_type?: string | null };
+const extrasData = (d: ContainerExtras) => ({
+  ...(d.scripts_json !== undefined && { scriptsJson: d.scripts_json }),
+  ...(d.description !== undefined && { description: d.description }),
+  ...(d.description_type !== undefined && { descriptionType: d.description_type })
+});
+
+/** Collection variables and globals: arbitrary names like Postman's (not the environment-variable key pattern). */
+const syncVarKey = z
+  .string()
+  .min(1)
+  .max(SYNC_VAR_KEY_MAX)
+  .refine((k) => k.trim() === k && k.length > 0, "variable key must not be blank or start/end with whitespace");
+const syncVarValue = z.string().max(SYNC_VAR_VALUE_MAX);
+const syncVarDescription = z.string().max(SYNC_VAR_DESCRIPTION_MAX).nullable();
+export const collectionVariableData = z.object({
+  collection_id: uuidish,
+  key: syncVarKey,
+  value: syncVarValue.default(""),
+  enabled: z.boolean().default(true),
+  description: syncVarDescription.default(null),
+  sort_order: sortOrder.default(0)
+});
+export const globalVariableData = z.object({
+  key: syncVarKey,
+  value: syncVarValue.nullable().default(""),
+  is_secret: z.boolean().default(false),
+  enabled: z.boolean().default(true),
+  description: syncVarDescription.default(null),
+  sort_order: sortOrder.default(0)
+});
 export const requestData = z.object({
   folder_id: uuidish.nullable().optional(),
   name: requestName,
@@ -82,12 +150,18 @@ export const collectionVersionData = z.object({
 // ---------------------------------------------------------------- sync payload shaping
 export function syncPayload(type: SyncResourceType, row: unknown): Record<string, unknown> {
   switch (type) {
-    case "collection":
+    case "collection": {
+      const c = row as Collection;
+      return { name: c.name, scripts_json: c.scriptsJson, description: c.description, description_type: c.descriptionType };
+    }
     case "environment":
-      return { name: (row as Collection | Environment).name };
+      return { name: (row as Environment).name };
     case "folder": {
       const f = row as Folder;
-      return { collection_id: f.collectionId, parent_folder_id: f.parentFolderId, name: f.name, sort_order: f.sortOrder };
+      return {
+        collection_id: f.collectionId, parent_folder_id: f.parentFolderId, name: f.name, sort_order: f.sortOrder,
+        scripts_json: f.scriptsJson, description: f.description, description_type: f.descriptionType
+      };
     }
     case "request": {
       const r = row as RequestRow;
@@ -106,6 +180,20 @@ export function syncPayload(type: SyncResourceType, row: unknown): Record<string
       return {
         collection_id: c.collectionId, semver: c.semver, notes: c.notes, snapshot_json: c.snapshotJson,
         folder_count: c.folderCount, request_count: c.requestCount, created_at: c.createdAt.toISOString()
+      };
+    }
+    case "collection_variable": {
+      const v = row as CollectionVariable;
+      return {
+        collection_id: v.collectionId, key: v.key, value: v.value, enabled: v.enabled, description: v.description, sort_order: v.sortOrder
+      };
+    }
+    case "global_variable": {
+      const g = row as GlobalVariable;
+      // Secret values never enter the sync log (they are not even stored).
+      return {
+        key: g.key, value: g.isSecret ? null : (g.value ?? ""), is_secret: g.isSecret, enabled: g.enabled, description: g.description,
+        sort_order: g.sortOrder
       };
     }
   }
@@ -128,15 +216,17 @@ async function log(tx: Tx, wsId: string, type: SyncResourceType, row: { id: stri
 const notFound = (what: string) => new AppError("not_found", `${what} not found`);
 
 // ---------------------------------------------------------------- collections
-export async function createCollection(tx: Tx, wsId: string, d: z.infer<typeof collectionData>, ctx?: WriteCtx, id?: string) {
-  const row = await tx.collection.create({ data: { id: id ?? newId(), workspaceId: wsId, name: d.name } });
+export async function createCollection(tx: Tx, wsId: string, d: z.infer<typeof collectionData> & ContainerExtras, ctx?: WriteCtx, id?: string) {
+  const row = await tx.collection.create({ data: { id: id ?? newId(), workspaceId: wsId, name: d.name, ...extrasData(d) } });
   await log(tx, wsId, "collection", row, "upsert", ctx);
   return row;
 }
-export async function updateCollection(tx: Tx, wsId: string, id: string, d: Partial<z.infer<typeof collectionData>>, expected: number, ctx?: WriteCtx) {
+export async function updateCollection(
+  tx: Tx, wsId: string, id: string, d: Partial<z.infer<typeof collectionData>> & ContainerExtras, expected: number, ctx?: WriteCtx
+) {
   const res = await tx.collection.updateMany({
     where: { id, workspaceId: wsId, version: expected },
-    data: { ...(d.name !== undefined && { name: d.name }), version: { increment: 1 } }
+    data: { ...(d.name !== undefined && { name: d.name }), ...extrasData(d), version: { increment: 1 } }
   });
   await ensureUpdated(res.count, () => tx.collection.findFirst({ where: { id, workspaceId: wsId } }));
   const row = await tx.collection.findFirstOrThrow({ where: { id, workspaceId: wsId } });
@@ -148,12 +238,14 @@ export async function deleteCollection(tx: Tx, wsId: string, id: string, expecte
   if (!row) throw notFound("collection");
   assertVersionIfGiven(row, expected);
   // Children are removed by FK cascade; log them so pullers can drop them too.
-  const [folders, requests, versions] = await Promise.all([
+  const [folders, requests, versions, variables] = await Promise.all([
     tx.folder.findMany({ where: { collectionId: id, workspaceId: wsId }, select: { id: true, version: true }, orderBy: { id: "asc" } }),
     tx.request.findMany({ where: { collectionId: id, workspaceId: wsId }, select: { id: true, version: true }, orderBy: { id: "asc" } }),
-    tx.collectionVersion.findMany({ where: { collectionId: id, workspaceId: wsId }, select: { id: true, version: true }, orderBy: { id: "asc" } })
+    tx.collectionVersion.findMany({ where: { collectionId: id, workspaceId: wsId }, select: { id: true, version: true }, orderBy: { id: "asc" } }),
+    tx.collectionVariable.findMany({ where: { collectionId: id, workspaceId: wsId }, select: { id: true, version: true }, orderBy: { id: "asc" } })
   ]);
   await tx.collection.deleteMany({ where: { id, workspaceId: wsId } });
+  for (const v of variables) await log(tx, wsId, "collection_variable", v, "delete", ctx && { ...ctx, operationId: undefined });
   for (const v of versions) await log(tx, wsId, "collection_version", v, "delete", ctx && { ...ctx, operationId: undefined });
   for (const r of requests) await log(tx, wsId, "request", r, "delete", ctx && { ...ctx, operationId: undefined });
   for (const f of folders) await log(tx, wsId, "folder", f, "delete", ctx && { ...ctx, operationId: undefined });
@@ -182,17 +274,22 @@ async function assertParentFolder(tx: Tx, wsId: string, collectionId: string, pa
     }
   }
 }
-export async function createFolder(tx: Tx, wsId: string, collectionId: string, d: z.infer<typeof folderData>, ctx?: WriteCtx, id?: string) {
+export async function createFolder(tx: Tx, wsId: string, collectionId: string, d: z.infer<typeof folderData> & ContainerExtras, ctx?: WriteCtx, id?: string) {
   const col = await tx.collection.findFirst({ where: { id: collectionId, workspaceId: wsId } });
   if (!col) throw notFound("collection");
   await assertParentFolder(tx, wsId, collectionId, d.parent_folder_id);
   const row = await tx.folder.create({
-    data: { id: id ?? newId(), workspaceId: wsId, collectionId, parentFolderId: d.parent_folder_id ?? null, name: d.name, sortOrder: d.sort_order ?? 0 }
+    data: {
+      id: id ?? newId(), workspaceId: wsId, collectionId, parentFolderId: d.parent_folder_id ?? null, name: d.name, sortOrder: d.sort_order ?? 0,
+      ...extrasData(d)
+    }
   });
   await log(tx, wsId, "folder", row, "upsert", ctx);
   return row;
 }
-export async function updateFolder(tx: Tx, wsId: string, id: string, d: Partial<z.infer<typeof folderData>>, expected: number, ctx?: WriteCtx) {
+export async function updateFolder(
+  tx: Tx, wsId: string, id: string, d: Partial<z.infer<typeof folderData>> & ContainerExtras, expected: number, ctx?: WriteCtx
+) {
   const cur = await tx.folder.findFirst({ where: { id, workspaceId: wsId } });
   if (!cur) throw notFound("folder");
   if (d.parent_folder_id !== undefined) await assertParentFolder(tx, wsId, cur.collectionId, d.parent_folder_id, id);
@@ -202,6 +299,7 @@ export async function updateFolder(tx: Tx, wsId: string, id: string, d: Partial<
       ...(d.name !== undefined && { name: d.name }),
       ...(d.parent_folder_id !== undefined && { parentFolderId: d.parent_folder_id }),
       ...(d.sort_order !== undefined && { sortOrder: d.sort_order }),
+      ...extrasData(d),
       version: { increment: 1 }
     }
   });
@@ -449,4 +547,111 @@ export function sameCollectionVersion(row: CollectionVersion, d: z.infer<typeof 
     row.collectionId === d.collection_id && row.semver === d.semver && (row.notes ?? null) === (d.notes ?? null) &&
     row.snapshotJson === d.snapshot_json && row.folderCount === d.folder_count && row.requestCount === d.request_count
   );
+}
+
+// ---------------------------------------------------------------- collection variables and globals (sync only)
+const dupKey = (what: string, holderId: string) =>
+  new AppError("conflict", `a ${what} with this key already exists`, { reason: "duplicate_key", existing_resource_id: holderId });
+
+/** Collection variable lookup by id, scoped to the workspace. */
+export const findCollectionVariable = (tx: Tx, wsId: string, id: string) => tx.collectionVariable.findFirst({ where: { id, workspaceId: wsId } });
+
+/**
+ * Sync-path create/update of a collection variable by id. On update, absent fields are unchanged; the collection
+ * never changes. The collection is checked against the workspace BEFORE the key-clash lookup (no cross-workspace leak).
+ */
+export async function syncPutCollectionVariable(
+  tx: Tx, wsId: string, id: string, cur: CollectionVariable | null, raw: Record<string, unknown>, ctx?: WriteCtx
+): Promise<CollectionVariable> {
+  const d = cur ? collectionVariableData.partial().parse(raw) : collectionVariableData.parse(raw);
+  const collectionId = d.collection_id ?? cur!.collectionId;
+  const col = await tx.collection.findFirst({ where: { id: collectionId, workspaceId: wsId } });
+  if (!col) throw notFound("collection");
+  if (cur && collectionId !== cur.collectionId) throw new AppError("invalid_request", "a collection variable cannot move between collections");
+  const key = d.key ?? cur!.key;
+  const clash = await tx.collectionVariable.findUnique({ where: { collectionId_key: { collectionId: col.id, key } } });
+  if (clash && clash.id !== id) throw dupKey("collection variable", clash.id);
+  let row: CollectionVariable;
+  if (cur) {
+    const res = await tx.collectionVariable.updateMany({
+      where: { id, workspaceId: wsId, version: cur.version },
+      data: {
+        key,
+        ...(d.value !== undefined && { value: d.value }),
+        ...(d.enabled !== undefined && { enabled: d.enabled }),
+        ...(d.description !== undefined && { description: d.description }),
+        ...(d.sort_order !== undefined && { sortOrder: d.sort_order }),
+        version: { increment: 1 }
+      }
+    });
+    await ensureUpdated(res.count, () => findCollectionVariable(tx, wsId, id));
+    row = await tx.collectionVariable.findFirstOrThrow({ where: { id, workspaceId: wsId } });
+  } else {
+    const c = d as z.infer<typeof collectionVariableData>;
+    row = await tx.collectionVariable.create({
+      data: { id, workspaceId: wsId, collectionId: col.id, key, value: c.value, enabled: c.enabled, description: c.description, sortOrder: c.sort_order }
+    });
+  }
+  await log(tx, wsId, "collection_variable", row, "upsert", ctx);
+  return row;
+}
+
+export async function deleteCollectionVariable(tx: Tx, wsId: string, id: string, expected?: number, ctx?: WriteCtx) {
+  const row = await findCollectionVariable(tx, wsId, id);
+  if (!row) throw notFound("collection variable");
+  assertVersionIfGiven(row, expected);
+  await tx.collectionVariable.deleteMany({ where: { id, workspaceId: wsId } });
+  await log(tx, wsId, "collection_variable", row, "delete", ctx);
+}
+
+/** Global variable lookup by id, scoped to the workspace. */
+export const findGlobalVariable = (tx: Tx, wsId: string, id: string) => tx.globalVariable.findFirst({ where: { id, workspaceId: wsId } });
+
+/**
+ * Sync-path create/update of a workspace global by id. Secrets are metadata only: a secret with a value is refused and
+ * nothing is stored for it (`value` NULL); converting a plaintext global to a secret wipes the stored plaintext. On
+ * update, absent fields are unchanged.
+ */
+export async function syncPutGlobalVariable(
+  tx: Tx, wsId: string, id: string, cur: GlobalVariable | null, raw: Record<string, unknown>, ctx?: WriteCtx
+): Promise<GlobalVariable> {
+  const d = cur ? globalVariableData.partial().parse(raw) : globalVariableData.parse(raw);
+  const isSecret = d.is_secret ?? cur?.isSecret ?? false;
+  if (isSecret && d.value != null) {
+    throw new AppError("invalid_request", "secret values must not be synced: send value null with is_secret true");
+  }
+  const value = isSecret ? null : d.value !== undefined ? (d.value ?? "") : cur && !cur.isSecret ? (cur.value ?? "") : "";
+  const key = d.key ?? cur!.key;
+  const clash = await tx.globalVariable.findUnique({ where: { workspaceId_key: { workspaceId: wsId, key } } });
+  if (clash && clash.id !== id) throw dupKey("global variable", clash.id);
+  let row: GlobalVariable;
+  if (cur) {
+    const res = await tx.globalVariable.updateMany({
+      where: { id, workspaceId: wsId, version: cur.version },
+      data: {
+        key, value, isSecret,
+        ...(d.enabled !== undefined && { enabled: d.enabled }),
+        ...(d.description !== undefined && { description: d.description }),
+        ...(d.sort_order !== undefined && { sortOrder: d.sort_order }),
+        version: { increment: 1 }
+      }
+    });
+    await ensureUpdated(res.count, () => findGlobalVariable(tx, wsId, id));
+    row = await tx.globalVariable.findFirstOrThrow({ where: { id, workspaceId: wsId } });
+  } else {
+    const c = d as z.infer<typeof globalVariableData>;
+    row = await tx.globalVariable.create({
+      data: { id, workspaceId: wsId, key, value, isSecret, enabled: c.enabled, description: c.description, sortOrder: c.sort_order }
+    });
+  }
+  await log(tx, wsId, "global_variable", row, "upsert", ctx);
+  return row;
+}
+
+export async function deleteGlobalVariable(tx: Tx, wsId: string, id: string, expected?: number, ctx?: WriteCtx) {
+  const row = await findGlobalVariable(tx, wsId, id);
+  if (!row) throw notFound("global variable");
+  assertVersionIfGiven(row, expected);
+  await tx.globalVariable.deleteMany({ where: { id, workspaceId: wsId } });
+  await log(tx, wsId, "global_variable", row, "delete", ctx);
 }

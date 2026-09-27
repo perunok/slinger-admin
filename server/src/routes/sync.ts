@@ -8,6 +8,7 @@ import { writeAuditLog } from "../lib/auditLog.js";
 import { authorizeWorkspace, requireWorkspaceRole } from "../auth/middleware.js";
 import { applyOperation, currentPayload, resourceTypes, type IncomingOp, type RejectionReason } from "../services/syncApply.js";
 import { readSnapshotPage, snapshotEntitySchema } from "../services/syncSnapshot.js";
+import { EXTENSION_FEATURES, clientFeatures, shapePayload, typeVisible, type ExtensionFeature } from "../services/syncFeatures.js";
 
 const id = z.string().min(1).max(64);
 const MAX_OPS = 500;
@@ -16,7 +17,12 @@ const PULL_PAGE_BYTES = 8 * 1024 * 1024;
 
 /** Sync protocol version advertised at client registration; the desktop refuses to sync below 2. */
 export const SYNC_PROTOCOL_VERSION = 2;
-export const SYNC_FEATURES = ["sort_order", "snapshot", "collection_version", "secret_metadata", "op_reasons", "request_move"] as const;
+export const SYNC_FEATURES = [
+  "sort_order", "snapshot", "collection_version", "secret_metadata", "op_reasons", "request_move", ...EXTENSION_FEATURES
+] as const;
+/** Declaration of the extension features a client understands (see services/syncFeatures.ts). */
+const featureList = z.array(z.string().max(64)).max(50);
+const featureQuery = z.string().max(1000).optional().describe("Comma separated extension features the client understands (folder_scripts, docs, collection_variables, globals)");
 
 const operationSchema = z.object({
   operation_id: id,
@@ -32,7 +38,9 @@ const operationSchema = z.object({
 const pushBody = z.object({
   client_id: id,
   base_checkpoint: z.number().int().min(0).default(0),
-  operations: z.array(operationSchema).max(MAX_OPS)
+  operations: z.array(operationSchema).max(MAX_OPS),
+  /** Extension features the client understands; shapes `current_payload` of rejections. */
+  features: featureList.optional()
 });
 
 const reasonEnum = z.enum([
@@ -75,7 +83,7 @@ const CODE_BY_REASON: Record<RejectionReason, Rejected["code"]> = {
 };
 
 /** Maps a thrown error to a per-operation rejection, or null when it is not a client-attributable failure (=> 500). */
-async function rejection(wsId: string, op: IncomingOp, err: unknown): Promise<Rejected | null> {
+async function rejection(wsId: string, op: IncomingOp, err: unknown, features: ReadonlySet<ExtensionFeature>): Promise<Rejected | null> {
   const base = { operation_id: op.operation_id, resource_id: op.resource_id, current_version: null, current_payload: null, conflicting_resource_id: null };
   if (err instanceof ZodError) {
     const tooLarge = err.issues.some((i) => i.code === "too_big" || (i.code === "custom" && (i as { params?: { reason?: string } }).params?.reason === "too_large"));
@@ -96,12 +104,14 @@ async function rejection(wsId: string, op: IncomingOp, err: unknown): Promise<Re
     const withState = cv !== null && (reason === "version_mismatch" || reason === "immutable");
     return {
       ...base, code: code as Rejected["code"], reason, message: err.message, current_version: cv,
-      current_payload: withState ? await currentPayload(prisma, wsId, op.resource_type, op.resource_id) : null,
+      current_payload: withState ? shapeOrNull(op.resource_type, await currentPayload(prisma, wsId, op.resource_type, op.resource_id), features) : null,
       conflicting_resource_id: typeof d.existing_resource_id === "string" ? d.existing_resource_id : null
     };
   }
   return null;
 }
+
+const shapeOrNull = (type: string, p: Record<string, unknown> | null, features: ReadonlySet<ExtensionFeature>) => (p ? shapePayload(type, p, features) : null);
 
 /** Per-user request budget for every sync endpoint (S12), on the shared rate limit store. Sets Retry-After on 429. */
 function syncRateLimit(app: FastifyInstance) {
@@ -147,7 +157,9 @@ export function registerSyncRoutes(app: FastifyInstance): void {
     summary: "Register a desktop client/device for sync",
     description:
       "Returns the sync `protocol_version` and `features` the server supports. Desktop builds that need sort_order, " +
-      "snapshot, collection versions and secret metadata require `protocol_version >= 2`.",
+      "snapshot, collection versions and secret metadata require `protocol_version >= 2`. Extension features " +
+      "(folder_scripts, docs, collection_variables, globals) are only served to clients that declare them on each sync call " +
+      "(`features`); the optional `features` in this body is informational.",
     tags: ["Sync"],
     auth: "user",
     pre: [limit],
@@ -155,7 +167,8 @@ export function registerSyncRoutes(app: FastifyInstance): void {
       client_name: z.string().trim().max(100).optional(),
       client_version: z.string().trim().max(50).optional(),
       device_name: z.string().trim().max(200).optional(),
-      platform: z.string().trim().max(50).optional()
+      platform: z.string().trim().max(50).optional(),
+      features: featureList.optional()
     }),
     responses: {
       201: z.object({
@@ -210,6 +223,7 @@ export function registerSyncRoutes(app: FastifyInstance): void {
       const wsId = req.workspaceCtx!.workspace.id;
       const client = await prisma.syncClient.findFirst({ where: { id: body.client_id, userId: req.auth!.user.id } });
       if (!client) throw new AppError("invalid_request", "unknown client_id; register the client first");
+      const features = clientFeatures(body.features);
 
       const accepted: z.infer<typeof acceptedSchema>[] = [];
       const rejected: Rejected[] = [];
@@ -252,7 +266,7 @@ export function registerSyncRoutes(app: FastifyInstance): void {
             }
             continue;
           }
-          const r = await rejection(wsId, op, err);
+          const r = await rejection(wsId, op, err, features);
           if (!r) throw err;
           rejected.push(r);
         }
@@ -284,7 +298,9 @@ export function registerSyncRoutes(app: FastifyInstance): void {
       "Returns changes from every writer (desktop sync and dashboard/REST edits), ordered by strictly increasing checkpoint " +
       "(`seq`). Secret variable values are masked (`value: null`). Use the returned `checkpoint` as the next `after_checkpoint`; " +
       "a page holds at most `limit` operations and roughly 8 MiB of payload (`has_more` tells whether to continue). " +
-      "Every delete, including cascaded ones (folder/collection/environment deletes), has its own tombstone entry.",
+      "Every delete, including cascaded ones (folder/collection/environment deletes), has its own tombstone entry. " +
+      "Resource types and collection/folder fields of extension features the client did not declare in `features` are left out " +
+      "(the checkpoint still advances over them); the response repeats the server's `features`.",
     access: "any active workspace member, or platform admin",
     tags: ["Sync"],
     auth: "user",
@@ -293,9 +309,12 @@ export function registerSyncRoutes(app: FastifyInstance): void {
     query: z.object({
       client_id: id,
       after_checkpoint: z.coerce.number().int().min(0).default(0),
-      limit: z.coerce.number().int().min(1).max(500).default(200)
+      limit: z.coerce.number().int().min(1).max(500).default(200),
+      features: featureQuery
     }),
-    responses: { 200: z.object({ operations: z.array(pullOpSchema), checkpoint: z.number().int(), has_more: z.boolean() }) },
+    responses: {
+      200: z.object({ operations: z.array(pullOpSchema), checkpoint: z.number().int(), has_more: z.boolean(), features: z.array(z.string()) })
+    },
     errors: [400, 401, 403, 404, 429],
     handler: async ({ req, params, query }) => {
       const client = await prisma.syncClient.findFirst({ where: { id: query.client_id, userId: req.auth!.user.id } });
@@ -305,6 +324,7 @@ export function registerSyncRoutes(app: FastifyInstance): void {
         orderBy: { seq: "asc" },
         take: query.limit + 1
       });
+      const features = clientFeatures(query.features);
       let page = rows.length > query.limit ? rows.slice(0, query.limit) : rows;
       let hasMore = rows.length > query.limit;
       let bytes = 0;
@@ -316,15 +336,18 @@ export function registerSyncRoutes(app: FastifyInstance): void {
           break;
         }
       }
+      // Undeclared extension types are skipped here (not in the query), so the checkpoint still moves past them.
+      const visible = page.filter((r) => typeVisible(r.resourceType, features));
       return {
-        operations: page.map((r) => ({
+        operations: visible.map((r) => ({
           operation_id: r.operationId, workspace_id: r.workspaceId,
           resource_type: r.resourceType as (typeof resourceTypes)[number], resource_id: r.resourceId,
           op: r.op as "upsert" | "delete", resulting_version: r.resultingVersion,
-          payload: r.payload as Record<string, unknown>, occurred_at: r.occurredAt.toISOString(), checkpoint: r.seq
+          payload: shapePayload(r.resourceType, r.payload as Record<string, unknown>, features), occurred_at: r.occurredAt.toISOString(), checkpoint: r.seq
         })),
         checkpoint: page.length ? page[page.length - 1]!.seq : query.after_checkpoint,
-        has_more: hasMore
+        has_more: hasMore,
+        features: [...SYNC_FEATURES]
       };
     }
   });
@@ -338,7 +361,9 @@ export function registerSyncRoutes(app: FastifyInstance): void {
       "(each by id) so parents precede children. `checkpoint` is read before the first page and repeated on every page through the " +
       "opaque `cursor`; after the last page (`next_cursor: null`) the client sets its checkpoint to it and pulls: rows may be newer " +
       "than `checkpoint` and the log replay is idempotent by version comparison. Secret values are masked (`value: null`). " +
-      "No tombstones. A page holds at most `limit` entities and roughly 8 MiB of payload.",
+      "No tombstones. A page holds at most `limit` entities and roughly 8 MiB of payload. Extension types " +
+      "(collection_variable, global_variable, after collection_version) and collection/folder fields are included only for the " +
+      "features the client declares in `features`; the response repeats the server's `features`.",
     access: "any active workspace member, or platform admin",
     tags: ["Sync"],
     auth: "user",
@@ -347,16 +372,20 @@ export function registerSyncRoutes(app: FastifyInstance): void {
     query: z.object({
       client_id: id,
       cursor: z.string().min(1).max(512).optional(),
-      limit: z.coerce.number().int().min(1).max(500).default(200)
+      limit: z.coerce.number().int().min(1).max(500).default(200),
+      features: featureQuery
     }),
     responses: {
-      200: z.object({ checkpoint: z.number().int(), entities: z.array(snapshotEntitySchema), next_cursor: z.string().nullable() })
+      200: z.object({
+        checkpoint: z.number().int(), entities: z.array(snapshotEntitySchema), next_cursor: z.string().nullable(), features: z.array(z.string())
+      })
     },
     errors: [400, 401, 403, 404, 429],
     handler: async ({ req, params, query }) => {
       const client = await prisma.syncClient.findFirst({ where: { id: query.client_id, userId: req.auth!.user.id } });
       if (!client) throw new AppError("invalid_request", "unknown client_id; register the client first");
-      return readSnapshotPage(prisma, params.workspaceId, query.cursor, query.limit);
+      const page = await readSnapshotPage(prisma, params.workspaceId, query.cursor, query.limit, clientFeatures(query.features));
+      return { ...page, features: [...SYNC_FEATURES] };
     }
   });
 }

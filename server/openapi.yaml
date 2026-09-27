@@ -5970,7 +5970,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-      description: Returns the sync `protocol_version` and `features` the server supports. Desktop builds that need sort_order, snapshot, collection versions and secret metadata require `protocol_version >= 2`.
+      description: Returns the sync `protocol_version` and `features` the server supports. Desktop builds that need sort_order, snapshot, collection versions and secret metadata require `protocol_version >= 2`. Extension features (folder_scripts, docs, collection_variables, globals) are only served to clients that declare them on each sync call (`features`); the optional `features` in this body is informational.
       requestBody:
         required: true
         content:
@@ -5990,6 +5990,12 @@ paths:
                 platform:
                   type: string
                   maxLength: 50
+                features:
+                  type: array
+                  items:
+                    type: string
+                    maxLength: 64
+                  maxItems: 50
               additionalProperties: false
   /v1/workspaces/{workspaceId}/sync/push:
     post:
@@ -6169,6 +6175,8 @@ paths:
                           - environment
                           - environment_variable
                           - collection_version
+                          - collection_variable
+                          - global_variable
                       resource_id:
                         type: string
                         minLength: 1
@@ -6196,6 +6204,12 @@ paths:
                       - op
                     additionalProperties: false
                   maxItems: 500
+                features:
+                  type: array
+                  items:
+                    type: string
+                    maxLength: 64
+                  maxItems: 50
               required:
                 - client_id
                 - operations
@@ -6237,6 +6251,8 @@ paths:
                             - environment
                             - environment_variable
                             - collection_version
+                            - collection_variable
+                            - global_variable
                         resource_id:
                           type: string
                         op:
@@ -6269,10 +6285,15 @@ paths:
                     type: integer
                   has_more:
                     type: boolean
+                  features:
+                    type: array
+                    items:
+                      type: string
                 required:
                   - operations
                   - checkpoint
                   - has_more
+                  - features
                 additionalProperties: false
         "400":
           description: Invalid request (zod validation failed, malformed JSON, bad cursor)
@@ -6305,7 +6326,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
       description: |-
-        Returns changes from every writer (desktop sync and dashboard/REST edits), ordered by strictly increasing checkpoint (`seq`). Secret variable values are masked (`value: null`). Use the returned `checkpoint` as the next `after_checkpoint`; a page holds at most `limit` operations and roughly 8 MiB of payload (`has_more` tells whether to continue). Every delete, including cascaded ones (folder/collection/environment deletes), has its own tombstone entry.
+        Returns changes from every writer (desktop sync and dashboard/REST edits), ordered by strictly increasing checkpoint (`seq`). Secret variable values are masked (`value: null`). Use the returned `checkpoint` as the next `after_checkpoint`; a page holds at most `limit` operations and roughly 8 MiB of payload (`has_more` tells whether to continue). Every delete, including cascaded ones (folder/collection/environment deletes), has its own tombstone entry. Resource types and collection/folder fields of extension features the client did not declare in `features` are left out (the checkpoint still advances over them); the response repeats the server's `features`.
 
         **Access:** any active workspace member, or platform admin.
       parameters:
@@ -6338,6 +6359,13 @@ paths:
             minimum: 1
             maximum: 500
             default: 200
+        - name: features
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 1000
+            description: Comma separated extension features the client understands (folder_scripts, docs, collection_variables, globals)
       x-access: any active workspace member, or platform admin
   /v1/workspaces/{workspaceId}/sync/snapshot:
     get:
@@ -6373,6 +6401,8 @@ paths:
                             - environment
                             - environment_variable
                             - collection_version
+                            - collection_variable
+                            - global_variable
                         resource_id:
                           type: string
                         version:
@@ -6389,10 +6419,15 @@ paths:
                   next_cursor:
                     type: string
                     nullable: true
+                  features:
+                    type: array
+                    items:
+                      type: string
                 required:
                   - checkpoint
                   - entities
                   - next_cursor
+                  - features
                 additionalProperties: false
         "400":
           description: Invalid request (zod validation failed, malformed JSON, bad cursor)
@@ -6425,7 +6460,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
       description: |-
-        Entities are returned in the order collection, environment, folder, request, environment_variable, collection_version (each by id) so parents precede children. `checkpoint` is read before the first page and repeated on every page through the opaque `cursor`; after the last page (`next_cursor: null`) the client sets its checkpoint to it and pulls: rows may be newer than `checkpoint` and the log replay is idempotent by version comparison. Secret values are masked (`value: null`). No tombstones. A page holds at most `limit` entities and roughly 8 MiB of payload.
+        Entities are returned in the order collection, environment, folder, request, environment_variable, collection_version (each by id) so parents precede children. `checkpoint` is read before the first page and repeated on every page through the opaque `cursor`; after the last page (`next_cursor: null`) the client sets its checkpoint to it and pulls: rows may be newer than `checkpoint` and the log replay is idempotent by version comparison. Secret values are masked (`value: null`). No tombstones. A page holds at most `limit` entities and roughly 8 MiB of payload. Extension types (collection_variable, global_variable, after collection_version) and collection/folder fields are included only for the features the client declares in `features`; the response repeats the server's `features`.
 
         **Access:** any active workspace member, or platform admin.
       parameters:
@@ -6458,6 +6493,13 @@ paths:
             minimum: 1
             maximum: 500
             default: 200
+        - name: features
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 1000
+            description: Comma separated extension features the client understands (folder_scripts, docs, collection_variables, globals)
       x-access: any active workspace member, or platform admin
   /v1/workspaces/{workspaceId}/realtime/token:
     post:

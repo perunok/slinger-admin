@@ -65,7 +65,7 @@ describe("sync", () => {
     expect(pull.operations[1].payload).toMatchObject({ collection_id: colId, name: "R1" });
     expect(pull).toMatchObject({ checkpoint: 2, has_more: false });
     const after = j(await call(app, { method: "GET", url: `${base}/pull?client_id=${client}&after_checkpoint=2`, as: owner }));
-    expect(after).toEqual({ operations: [], checkpoint: 2, has_more: false });
+    expect(after).toEqual({ operations: [], checkpoint: 2, has_more: false, features: expect.any(Array) });
   });
 
   it("rejects stale base_version with sync_conflict + current_version; accepts the correct one", async () => {

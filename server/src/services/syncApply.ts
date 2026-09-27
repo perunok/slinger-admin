@@ -6,7 +6,9 @@ import type { SyncResourceType } from "./syncLog.js";
 
 type Tx = Prisma.TransactionClient;
 
-export const resourceTypes = ["collection", "folder", "request", "environment", "environment_variable", "collection_version"] as const;
+export const resourceTypes = [
+  "collection", "folder", "request", "environment", "environment_variable", "collection_version", "collection_variable", "global_variable"
+] as const;
 
 export type IncomingOp = {
   operation_id: string;
@@ -19,7 +21,7 @@ export type IncomingOp = {
 };
 
 const uuidish = z.string().min(1).max(64);
-const folderCreate = c.folderData.extend({ collection_id: uuidish });
+const folderCreate = c.syncFolderData.extend({ collection_id: uuidish });
 const requestCreate = c.requestData.extend({ collection_id: uuidish });
 const variableCreate = c.syncVariableData.extend({ environment_id: uuidish, key: c.variableKey });
 
@@ -78,9 +80,9 @@ export async function applyOperation(
         await c.deleteCollection(tx, wsId, id, undefined, ctx);
         return cur.version;
       }
-      if (cur) return (await c.updateCollection(tx, wsId, id, c.collectionData.partial().parse(op.payload), cur.version, ctx)).version;
+      if (cur) return (await c.updateCollection(tx, wsId, id, c.syncCollectionData.partial().parse(op.payload), cur.version, ctx)).version;
       if (await tx.collection.findUnique({ where: { id } })) throw idTaken();
-      return (await c.createCollection(tx, wsId, c.collectionData.parse(op.payload), ctx, id)).version;
+      return (await c.createCollection(tx, wsId, c.syncCollectionData.parse(op.payload), ctx, id)).version;
     }
     case "folder": {
       const cur = await tx.folder.findFirst({ where: { id, workspaceId: wsId } });
@@ -159,11 +161,36 @@ export async function applyOperation(
       if (await tx.collectionVersion.findUnique({ where: { id } })) throw idTaken();
       return (await c.createCollectionVersion(tx, wsId, id, d, ctx)).version;
     }
+    case "collection_variable": {
+      const cur = await c.findCollectionVariable(tx, wsId, id);
+      checkBase(cur, op);
+      if (op.op === "delete") {
+        if (!cur) throw new AppError("not_found", "collection variable not found");
+        await c.deleteCollectionVariable(tx, wsId, id, undefined, ctx);
+        return cur.version;
+      }
+      if (!cur && (await tx.collectionVariable.findUnique({ where: { id } }))) throw idTaken();
+      return (await c.syncPutCollectionVariable(tx, wsId, id, cur, op.payload, ctx)).version;
+    }
+    case "global_variable": {
+      const cur = await c.findGlobalVariable(tx, wsId, id);
+      checkBase(cur, op);
+      if (op.op === "delete") {
+        if (!cur) throw new AppError("not_found", "global variable not found");
+        await c.deleteGlobalVariable(tx, wsId, id, undefined, ctx);
+        return cur.version;
+      }
+      if (!cur && (await tx.globalVariable.findUnique({ where: { id } }))) throw idTaken();
+      return (await c.syncPutGlobalVariable(tx, wsId, id, cur, op.payload, ctx)).version;
+    }
   }
 }
 
 /** Current wire payload of a resource in this workspace (for `version_mismatch` rejections), or null when gone. */
-export async function currentPayload(tx: Pick<Tx, "collection" | "folder" | "request" | "environment" | "environmentVariable" | "collectionVersion">, wsId: string, type: SyncResourceType, id: string) {
+export async function currentPayload(
+  tx: Pick<Tx, "collection" | "folder" | "request" | "environment" | "environmentVariable" | "collectionVersion" | "collectionVariable" | "globalVariable">,
+  wsId: string, type: SyncResourceType, id: string
+) {
   switch (type) {
     case "collection": { const r = await tx.collection.findFirst({ where: { id, workspaceId: wsId } }); return r && c.syncPayload(type, r); }
     case "folder": { const r = await tx.folder.findFirst({ where: { id, workspaceId: wsId } }); return r && c.syncPayload(type, r); }
@@ -171,5 +198,7 @@ export async function currentPayload(tx: Pick<Tx, "collection" | "folder" | "req
     case "environment": { const r = await tx.environment.findFirst({ where: { id, workspaceId: wsId } }); return r && c.syncPayload(type, r); }
     case "environment_variable": { const r = await c.findVariableById(tx as Tx, wsId, id); return r && c.syncPayload(type, r); }
     case "collection_version": { const r = await tx.collectionVersion.findFirst({ where: { id, workspaceId: wsId } }); return r && c.syncPayload(type, r); }
+    case "collection_variable": { const r = await tx.collectionVariable.findFirst({ where: { id, workspaceId: wsId } }); return r && c.syncPayload(type, r); }
+    case "global_variable": { const r = await tx.globalVariable.findFirst({ where: { id, workspaceId: wsId } }); return r && c.syncPayload(type, r); }
   }
 }

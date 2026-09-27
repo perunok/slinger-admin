@@ -7,7 +7,14 @@
   import { Action } from '../lib/state/action.svelte';
   import { session } from '../lib/state/session.svelte';
   import { toasts } from '../lib/state/toasts.svelte';
-  import { assignablePlatformRoles, canChangePlatformRole, canCreateUsers, disableUserPolicy, platformRoleLabel } from '../lib/permissions';
+  import {
+    assignablePlatformRoles,
+    canChangePlatformRole,
+    canCreateUsers,
+    disableUserPolicy,
+    platformRoleLabel,
+    userPasswordPolicy,
+  } from '../lib/permissions';
   import { debounce, matches } from '../lib/util';
   import { formatDate } from '../lib/format';
   import { hasErrors, validateNewUser, type Errors } from '../lib/validation';
@@ -45,6 +52,8 @@
   let form = $state({ email: '', display_name: '', password: '', platform_role: 'user' as PlatformRole });
   /** `generate`: the server creates a temporary password and returns it once. `manual`: the admin types one. */
   let passwordMode = $state<'generate' | 'manual'>('generate');
+  /** Sent as `must_change_password`; always on (and locked) for generated passwords, like the server. */
+  let requireChange = $state(true);
   let errors = $state<Errors<'email' | 'display_name' | 'password'>>({});
   /** Shown exactly once after a generated-password create; cleared when the dialog closes. */
   let issued = $state<{ email: string; password: string } | null>(null);
@@ -53,6 +62,7 @@
   function openCreate() {
     form = { email: '', display_name: '', password: '', platform_role: 'user' };
     passwordMode = 'generate';
+    requireChange = true;
     errors = {};
     issued = null;
     createAction.error = null;
@@ -75,6 +85,7 @@
           display_name: form.display_name.trim(),
           platform_role: form.platform_role,
           ...(generate ? {} : { password: form.password }),
+          must_change_password: generate || requireChange,
         }),
       { success: 'User created', toastError: false },
     );
@@ -106,6 +117,41 @@
     if (res?.ok) {
       pager.patch((u) => u.id === t.user.id, () => res.value.user);
       toggling = null;
+    }
+  }
+
+  // ---- must change password (explicit flag) ----
+  let flagBusy = $state<Record<string, boolean>>({});
+  const pwPolicy = (u: User) => userPasswordPolicy(me, u);
+  async function setRequireChange(u: User, input: HTMLInputElement) {
+    const want = input.checked;
+    if (flagBusy[u.id]) return;
+    flagBusy[u.id] = true;
+    try {
+      const res = await api.admin.setMustChangePassword(u.id, want);
+      pager.patch((x) => x.id === u.id, () => res.user);
+      toasts.success(want ? `${u.email} must choose a new password` : `${u.email} no longer has to change the password`);
+    } catch (e) {
+      input.checked = !want;
+      if (!(e instanceof ApiError && e.kind === 'unauthenticated')) toasts.error(errorMessage(e));
+    } finally {
+      flagBusy[u.id] = false;
+    }
+  }
+
+  // ---- reset password ----
+  let resetting = $state<User | null>(null);
+  /** Shown exactly once after a reset; cleared when the dialog closes. */
+  let resetIssued = $state<{ email: string; password: string } | null>(null);
+  const resetAction = new Action();
+  async function confirmReset() {
+    const target = resetting;
+    if (!target) return;
+    const res = await resetAction.run(() => api.admin.resetPassword(target.id), { success: `Password reset for ${target.email}`, toastError: false });
+    if (res?.ok) {
+      pager.patch((x) => x.id === target.id, () => res.value.user);
+      resetIssued = { email: target.email, password: res.value.temporary_password };
+      resetting = null;
     }
   }
 
@@ -155,10 +201,11 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>User</th><th>Platform role</th><th>Created</th>{#if canCreate}<th><span class="sr-only">Actions</span></th>{/if}</tr>
+          <tr><th>User</th><th>Platform role</th><th>Password</th><th>Created</th>{#if canCreate}<th><span class="sr-only">Actions</span></th>{/if}</tr>
         </thead>
         <tbody>
           {#each visible as u (u.id)}
+            {@const pw = pwPolicy(u)}
             <tr>
               <td>
                 <div><strong>{u.display_name || u.email}</strong>{#if u.id === me?.id} <Badge tone="info" text="You" />{/if}{#if u.disabled} <Badge tone="danger" text="Disabled" />{/if}</div>
@@ -183,10 +230,38 @@
                   <Badge tone={u.platform_role === 'user' ? 'neutral' : 'info'} text={platformRoleLabel[u.platform_role]} />
                 {/if}
               </td>
+              <td>
+                {#if canCreate && pw.allowed}
+                  <label class="check small" title="The user can only choose a new password until they do">
+                    <input
+                      type="checkbox"
+                      checked={u.must_change_password === true}
+                      disabled={flagBusy[u.id]}
+                      aria-label="Require password change for {u.email}"
+                      onchange={(e) => setRequireChange(u, e.currentTarget)}
+                    />
+                    Must change
+                  </label>
+                {:else if u.must_change_password}
+                  <Badge tone="warning" text="Must change" />
+                {:else}
+                  <span class="muted">—</span>
+                {/if}
+              </td>
               <td class="muted">{formatDate(u.created_at)}</td>
               {#if canCreate}
                 {@const pol = policy(u)}
                 <td class="actions">
+                  <Button
+                    size="sm"
+                    disabled={!pw.allowed}
+                    title={pw.allowed ? undefined : pw.reason}
+                    aria-label="Reset password for {u.email}"
+                    onclick={() => {
+                      resetAction.error = null;
+                      resetting = u;
+                    }}>Reset password</Button
+                  >
                   {#if u.disabled}
                     <Button
                       size="sm"
@@ -234,7 +309,7 @@
           <code aria-label="Temporary password">{issued.password}</code>
           <CopyButton value={issued.password} label="Copy password" secret />
         </div>
-        <p class="muted small">Share it through a secure channel. The user can change it afterwards through the API (POST /v1/me/password).</p>
+        <p class="muted small">Share it through a secure channel. The user has to choose a new password at first sign-in.</p>
       </div>
     {:else}
       <form id="create-user" class="form-grid" onsubmit={submitCreate} novalidate>
@@ -258,6 +333,20 @@
         {:else}
           <p class="field-hint">A random password is generated by the server and shown once after the user is created.</p>
         {/if}
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={passwordMode === 'generate' || requireChange}
+            disabled={passwordMode === 'generate'}
+            onchange={(e) => (requireChange = e.currentTarget.checked)}
+          />
+          Require a password change at first sign-in
+        </label>
+        <p class="field-hint">
+          {passwordMode === 'generate'
+            ? 'Always required for a generated temporary password.'
+            : 'Until then the user can only choose a new password (dashboard and desktop sign-in are blocked).'}
+        </p>
         <SelectField
           label="Platform role"
           bind:value={form.platform_role}
@@ -273,6 +362,41 @@
         <Button onclick={closeCreate} disabled={createAction.pending}>Cancel</Button>
         <Button type="submit" form="create-user" variant="primary" busy={createAction.pending}>Create user</Button>
       {/if}
+    {/snippet}
+  </Modal>
+{/if}
+
+{#if resetting}
+  <ConfirmDialog
+    title="Reset password"
+    confirmLabel="Reset password"
+    danger
+    busy={resetAction.pending}
+    error={resetAction.error}
+    onconfirm={confirmReset}
+    oncancel={() => (resetting = null)}
+  >
+    <p>
+      <strong>{resetting.email}</strong> gets a new temporary password (shown once) and is signed out everywhere: dashboard
+      sessions and desktop apps. They must choose a new password at their next sign-in.
+    </p>
+  </ConfirmDialog>
+{/if}
+
+{#if resetIssued}
+  <Modal title="Password reset" onclose={() => (resetIssued = null)} locked>
+    <div class="stack" data-testid="reset-password">
+      <p>
+        <strong>{resetIssued.email}</strong> can sign in with this temporary password and will be asked to choose a new one. It
+        is shown only once.
+      </p>
+      <div class="secret">
+        <code aria-label="Temporary password">{resetIssued.password}</code>
+        <CopyButton value={resetIssued.password} label="Copy password" secret />
+      </div>
+    </div>
+    {#snippet footer()}
+      <Button variant="primary" onclick={() => (resetIssued = null)}>Done</Button>
     {/snippet}
   </Modal>
 {/if}
@@ -337,6 +461,12 @@
     font-size: var(--text-lg, 1.1rem);
     overflow-wrap: anywhere;
     user-select: all;
+  }
+  .check {
+    display: inline-flex;
+    gap: var(--space-2);
+    align-items: center;
+    white-space: nowrap;
   }
   .role-select {
     width: auto;

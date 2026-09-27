@@ -83,3 +83,21 @@ export function disableUserPolicy(
   }
   return { allowed: true };
 }
+
+/**
+ * Force a password change / reset a user's password (PATCH /admin/users/{id} `{must_change_password}`,
+ * POST /admin/users/{id}/reset-password). Same rules as disabling: not yourself (use the Account page), never the super
+ * admin, other platform admins only by the super admin.
+ */
+export function userPasswordPolicy(
+  actor: { id: string; platform_role: PlatformRole } | null | undefined,
+  target: { id: string; platform_role: PlatformRole },
+): { allowed: true } | { allowed: false; reason: string } {
+  if (!actor || !isPlatformAdmin(actor.platform_role)) return { allowed: false, reason: 'Only platform admins can manage passwords' };
+  if (target.id === actor.id) return { allowed: false, reason: 'Change your own password on the Account page' };
+  if (target.platform_role === 'super_admin') return { allowed: false, reason: "The super admin's password can only be changed by the super admin" };
+  if (target.platform_role === 'platform_admin' && !isSuperAdmin(actor.platform_role)) {
+    return { allowed: false, reason: "Only the super admin can manage a platform admin's password" };
+  }
+  return { allowed: true };
+}

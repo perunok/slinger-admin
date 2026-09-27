@@ -75,4 +75,16 @@ describe('authorization matrix', () => {
     expect(p.grantableWorkspaceRoles('user', 'editor')).toEqual(['editor', 'viewer']);
     expect(p.grantableWorkspaceRoles('user', null)).toEqual([]);
   });
+
+  it('userPasswordPolicy mirrors the admin password rules', () => {
+    const sup = { id: 's', platform_role: 'super_admin' as const };
+    const pad = { id: 'p', platform_role: 'platform_admin' as const };
+    const plain = { id: 'u', platform_role: 'user' as const };
+    expect(p.userPasswordPolicy(pad, plain)).toEqual({ allowed: true });
+    expect(p.userPasswordPolicy(pad, pad)).toMatchObject({ allowed: false });
+    expect(p.userPasswordPolicy(pad, { id: 'p2', platform_role: 'platform_admin' })).toMatchObject({ allowed: false });
+    expect(p.userPasswordPolicy(sup, pad)).toEqual({ allowed: true });
+    expect(p.userPasswordPolicy(pad, sup)).toMatchObject({ allowed: false });
+    expect(p.userPasswordPolicy(plain, { id: 'x', platform_role: 'user' })).toMatchObject({ allowed: false });
+  });
 });

@@ -115,6 +115,10 @@ The ones you will touch most:
 
 ## Tests
 
+CI (`.github/workflows/ci.yml`, every push and pull request) runs the same checks: typecheck, server tests against a
+PostgreSQL service container, dashboard tests + build, the end-to-end suite (`E2E_DATABASE_URL` pointing at a service
+container) and a build of both Docker images.
+
 | What | Command | Needs |
 |---|---|---|
 | Server (Vitest, `app.inject()` against a real PostgreSQL) | `cd server && npm test` | a PostgreSQL, see below |

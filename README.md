@@ -87,6 +87,11 @@ secrets and refuses to start until they are set. Only Caddy publishes ports. The
 `deploy/Caddyfile.https` with `SLINGER_DOMAIN`, `SLINGER_BASE_URL=https://...` and `SLINGER_COOKIE_SECURE=true`. Details,
 routing table, backups and upgrades: [`deploy-manual.md`](deploy-manual.md).
 
+Prebuilt multi-arch images (amd64 + arm64) are published to Docker Hub on every release tag by
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml): `<namespace>/slinger-server` and
+`<namespace>/slinger-admin-dashboard`. To run them without building, see
+[deploy-manual.md, "Or use the published images"](deploy-manual.md#or-use-the-published-images-no-local-build).
+
 ## Environment variables
 
 Full, validated list with defaults: [`server/README.md#configuration-environment-variables`](server/README.md#configuration-environment-variables).

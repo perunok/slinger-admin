@@ -1,0 +1,81 @@
+name: Publish images
+
+# Builds the server and dashboard images for linux/amd64 and linux/arm64 and pushes them to Docker Hub.
+#   Tag push vX.Y.Z  -> <namespace>/slinger-server:X.Y.Z, :X.Y, :latest (same for slinger-admin-dashboard)
+#   Manual run       -> :edge and :sha-<short sha>
+#
+# Repository settings (Settings > Secrets and variables > Actions):
+#   variable DOCKERHUB_NAMESPACE   Docker Hub user or organisation that owns the repositories
+#   secret   DOCKERHUB_USERNAME    account that pushes
+#   secret   DOCKERHUB_TOKEN       Docker Hub access token with read/write access (not the account password)
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: slinger-server
+            context: server
+            dockerfile: server/Dockerfile
+          - image: slinger-admin-dashboard
+            context: .
+            dockerfile: admin-dashboard/Dockerfile
+    steps:
+      - name: Check configuration
+        env:
+          NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          HAS_USER: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+          HAS_TOKEN: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        run: |
+          missing=""
+          [ -n "$NAMESPACE" ] || missing="$missing variable DOCKERHUB_NAMESPACE,"
+          [ "$HAS_USER" = "true" ] || missing="$missing secret DOCKERHUB_USERNAME,"
+          [ "$HAS_TOKEN" = "true" ] || missing="$missing secret DOCKERHUB_TOKEN,"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository settings:${missing%,}. See the comment at the top of publish.yml."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: docker.io/${{ vars.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=edge,enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=sha,prefix=sha-,enable=${{ github.event_name == 'workflow_dispatch' }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.image }}
+            org.opencontainers.image.licenses=MIT
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}

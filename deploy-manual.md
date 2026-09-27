@@ -41,8 +41,26 @@ docker compose up -d --build
 docker compose ps        # server becomes healthy once migrations ran and /healthz can reach Postgres
 ```
 
-The server applies database migrations on boot (`prisma migrate deploy`). If you build images elsewhere, set `SLINGER_SERVER_IMAGE`
-/ `SLINGER_ADMIN_DASHBOARD_IMAGE`, `docker compose pull` (or `docker load`) and `docker compose up -d`.
+The server applies database migrations on boot (`prisma migrate deploy`).
+
+### Or use the published images (no local build)
+
+Every release tag publishes multi-arch images (linux/amd64 and linux/arm64) to Docker Hub as
+`<namespace>/slinger-server` and `<namespace>/slinger-admin-dashboard`, tagged `X.Y.Z`, `X.Y` and `latest`. Point compose at
+them in `.env` and pull instead of building:
+
+```env
+SLINGER_SERVER_IMAGE=<namespace>/slinger-server:0.1
+SLINGER_ADMIN_DASHBOARD_IMAGE=<namespace>/slinger-admin-dashboard:0.1
+```
+
+```bash
+docker compose pull server admin-dashboard
+docker compose up -d --no-build
+```
+
+Pin `X.Y` (or `X.Y.Z`) rather than `latest` so an update only happens when you change the tag. Images built elsewhere work the
+same way (`docker load`, then the two variables).
 
 ## What the proxy routes
 
@@ -68,7 +86,8 @@ If you change the public port, include it in `SLINGER_BASE_URL` (e.g. `http://yo
 ## Update
 
 ```bash
-git pull && docker compose up -d --build
+git pull && docker compose up -d --build                                          # building locally
+docker compose pull server admin-dashboard && docker compose up -d --no-build      # published images (bump the tags in .env first)
 ```
 
 Database data lives in the `postgres-data` volume; Caddy certificates in `caddy-data`.

@@ -1,6 +1,8 @@
 # Build context is the repository root (see docker-compose.yml / deploy docs):
 #   docker build -f admin-dashboard/Dockerfile -t slinger-admin-dashboard .
-FROM node:22-alpine AS build
+# Debian (glibc) rather than Alpine: `npm ci` for linux/arm64 runs under QEMU when the image is published multi-arch, and
+# Node on Alpine crashed there with "Illegal instruction" (the server image, on bookworm-slim, built fine).
+FROM node:22-bookworm-slim AS build
 WORKDIR /app/admin-dashboard
 # Dependency layer: only re-runs when the manifests change.
 COPY admin-dashboard/package.json admin-dashboard/package-lock.json ./
@@ -9,7 +11,7 @@ RUN npm ci
 COPY admin-dashboard/ ./
 RUN npm run build
 
-FROM node:22-alpine
+FROM node:22-bookworm-slim
 WORKDIR /app/admin-dashboard
 ENV NODE_ENV=production
 COPY --from=build /app/admin-dashboard/package.json ./

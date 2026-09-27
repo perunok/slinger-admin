@@ -90,7 +90,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     const origin = req.headers.origin;
     if (origin) {
       const allowed = isOriginAllowed(cfg, origin, req.headers.host);
-      const cookieAuthed = Boolean(req.headers.cookie?.includes(`${SESSION_COOKIE_NAME}=`)) && !req.headers.authorization;
+      // The device-login form (/device) signs in with the email + password it posts and never reads the session cookie,
+      // so a dashboard cookie the browser happens to send along must not get it refused (a browser may also send
+      // "Origin: null" for that form POST under a strict Referrer-Policy).
+      const usesSessionCookie = req.url.split("?")[0] !== "/device";
+      const cookieAuthed =
+        usesSessionCookie && Boolean(req.headers.cookie?.includes(`${SESSION_COOKIE_NAME}=`)) && !req.headers.authorization;
       // Preflights and cookie-carrying requests from unknown origins are refused outright.
       if (!allowed && (req.method === "OPTIONS" || cookieAuthed)) {
         throw new AppError("origin_not_allowed", "origin is not in the allowlist");
@@ -161,7 +166,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       }
     },
     // HSTS only when the deployment really is HTTPS (Secure cookies on); meaningless/harmful otherwise.
-    strictTransportSecurity: cfg.cookieSecure ? { maxAge: 31536000, includeSubDomains: false } : false
+    strictTransportSecurity: cfg.cookieSecure ? { maxAge: 31536000, includeSubDomains: false } : false,
+    // Not helmet's "no-referrer": under it browsers send "Origin: null" on same-origin POSTs, which the origin check above
+    // cannot tell apart from a foreign page. "same-origin" still sends nothing to other sites.
+    referrerPolicy: { policy: "same-origin" }
   });
   await app.register(cors, {
     delegator: (req, callback) => {

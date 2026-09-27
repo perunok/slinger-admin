@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { Prisma, WorkspaceRole } from "@prisma/client";
+import type { PlatformRole, Prisma, WorkspaceRole } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../db.js";
 import { AppError } from "../lib/errors.js";
@@ -13,7 +13,7 @@ import {
   assignableRoleEnum, inviteSchema, joinRequestSchema, memberSchema, ok, okSchema, paged, toInvite,
   toJoinRequest, toMember, workspaceRoleEnum
 } from "../lib/dto.js";
-import { requireWorkspaceRole } from "../auth/middleware.js";
+import { ROLE_RANK, requireWorkspaceRole, type WorkspaceCtx } from "../auth/middleware.js";
 import { emailSchema } from "./auth.js";
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -36,6 +36,19 @@ async function activateMembership(tx: Prisma.TransactionClient, workspaceId: str
     data: { status: "active", role, joinedAt: new Date(), version: { increment: 1 } },
     include: { user: true }
   });
+}
+
+/** The workspace default for approvals; only viewer/editor can be configured, anything else falls back to viewer. */
+function defaultJoinRole(r: WorkspaceRole): WorkspaceRole {
+  return r === "editor" ? "editor" : "viewer";
+}
+
+/** A member may grant at most their own role (platform admins may grant any assignable role). */
+function assertCanGrant(ctx: WorkspaceCtx, platformRole: PlatformRole, role: WorkspaceRole): void {
+  if (platformRole === "super_admin" || platformRole === "platform_admin") return;
+  if (!ctx.membership || ROLE_RANK[role] > ROLE_RANK[ctx.membership.role]) {
+    throw new AppError("forbidden", "you cannot grant a role above your own");
+  }
 }
 
 export function registerMembershipRoutes(app: FastifyInstance): void {
@@ -179,6 +192,7 @@ export function registerMembershipRoutes(app: FastifyInstance): void {
     errors: [400, 401, 403, 404, 409],
     handler: async ({ req, body }) => {
       const ws = req.workspaceCtx!.workspace;
+      assertCanGrant(req.workspaceCtx!, req.auth!.user.platformRole, body.role);
       const token = randomToken(32);
       const invite = await prisma.$transaction(async (tx) => {
         const now = new Date();
@@ -356,6 +370,9 @@ export function registerMembershipRoutes(app: FastifyInstance): void {
     method: "POST",
     url: "/v1/workspaces/:workspaceId/join-requests/:joinRequestId/approve",
     summary: "Approve a join request and create the membership (atomic)",
+    description:
+      "Without `role`, the workspace's `default_role_for_requests` is granted (the requester's `requested_role` is only a hint " +
+      "shown to the approver). Nobody can grant a role above their own: a workspace admin grants at most `admin`.",
     access: "workspace owner/admin, or platform admin",
     tags: ["Membership"],
     auth: "user",
@@ -373,12 +390,16 @@ export function registerMembershipRoutes(app: FastifyInstance): void {
           data: { status: "approved", version: { increment: 1 } }
         });
         if (claimed.count !== 1) throw new AppError("conflict", "join request was just modified");
-        const role = body.role ?? (jr.requestedRole === "owner" ? "viewer" : jr.requestedRole);
+        const role = body.role ?? defaultJoinRole(ws.defaultRoleForRequests);
+        assertCanGrant(req.workspaceCtx!, req.auth!.user.platformRole, role);
         const mem = await activateMembership(tx, ws.id, jr.requesterUserId, role);
         await writeAuditLog(tx, {
           actorUserId: req.auth!.user.id, action: "join_request.approved", resourceType: "join_request",
           resourceId: jr.id, workspaceId: ws.id, requestId: req.id,
-          details: { requester_user_id: jr.requesterUserId, role: mem.role }
+          details: {
+            requester_user_id: jr.requesterUserId, role: mem.role, requested_role: jr.requestedRole,
+            role_source: body.role ? "explicit" : "workspace_default"
+          }
         });
         return mem;
       });

@@ -66,7 +66,13 @@ function operation(r: RegisteredRoute): Json {
     security: r.auth === "user" ? [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }] : [],
     responses
   };
-  const descr = [r.description, r.access ? `**Access:** ${r.access}.` : undefined].filter(Boolean).join("\n\n");
+  const descr = [
+    r.description,
+    r.access ? `**Access:** ${r.access}.` : undefined,
+    r.auth === "user" && r.allowWhilePasswordChangeRequired
+      ? "Also usable while the account must change its password (`must_change_password`); every route without this note answers `403 password_change_required` then."
+      : undefined
+  ].filter(Boolean).join("\n\n");
   if (descr) op.description = descr;
   const parameters = [...paramsFrom(r.params, "path"), ...paramsFrom(r.query, "query")];
   if (parameters.length) op.parameters = parameters;
@@ -100,7 +106,7 @@ export async function buildOpenApiDocument(): Promise<Json> {
       code: z.enum([
         "invalid_request", "unauthenticated", "forbidden", "not_found", "conflict", "rate_limited",
         "workspace_access_denied", "version_mismatch", "invite_invalid", "join_request_not_allowed", "sync_conflict",
-        "csrf_invalid", "origin_not_allowed", "internal_error"
+        "csrf_invalid", "origin_not_allowed", "password_change_required", "internal_error"
       ]),
       message: z.string(),
       details: z.record(z.unknown()),

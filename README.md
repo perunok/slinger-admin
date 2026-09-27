@@ -146,8 +146,9 @@ npm run e2e       # starts everything, runs the suite, cleans up
 dashboard instances (same-origin proxy and cross-origin CORS), runs the Playwright suite in
 [`e2e/tests/`](e2e/tests/admin.spec.ts) and removes the container afterwards, even on failure or Ctrl+C. Extra arguments go to
 Playwright (`npm run e2e -- --headed`, `npm run e2e -- -g "invites"`). The suite covers login and wrong password, user creation
-and platform-role change, generated temporary passwords (shown once), disabling/enabling users (existing sessions die), workspace create/settings (version conflict)/delete (typed confirmation), members and role change, one-time invite tokens and
-acceptance through the API, join-request approve/reject, hosts, their TXT verification record and removal, the degraded health breakdown, platform and workspace audit
+and platform-role change, generated temporary passwords (shown once), the forced password change (temporary password -> "choose a
+new password" -> dashboard, desktop sign-in refused until then, other sessions signed out, admin reset), disabling/enabling users (existing sessions die), workspace create/settings (version conflict)/delete (typed confirmation), members and role change, one-time invite tokens and
+acceptance through the API, join-request approve/reject (workspace default role preselected), hosts, their TXT verification record and removal, the degraded health breakdown, platform and workspace audit
 logs, CSRF refusal, session expiry with return to the same page, logout, role-based UI, and CORS across origins.
 
 ## Repository layout

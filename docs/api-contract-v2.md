@@ -36,6 +36,19 @@ Two login flows, both issuing the same kind of access/refresh JWT pair, sharing 
    - Every mutating request authenticated via the browser session cookie (not a Bearer token) MUST also carry a matching `X-CSRF-Token` header equal to the `csrf_token` issued at login (stored server-side alongside the session, compared with a constant-time check). Reject with `403 forbidden` (`code: "csrf_invalid"`) if missing/mismatched. Bearer-token requests (desktop app) are exempt — CSRF only matters for cookie auth.
    - Rate limit both login endpoints: max 10 attempts / 5 minutes per IP+email pair via `@fastify/rate-limit`, returning `429 rate_limited`.
 
+**Passwords (implemented beyond the original contract):**
+- `POST /v1/me/password {current_password, new_password}`: policy 12-256 characters and different from the current one; wrong current
+  password → `403 forbidden` with `details.reason: invalid_current_password`; rate limited per user (`429 rate_limited`). On success
+  every refresh token is revoked, every access token issued so far is rejected (users carry a `tokenVersion`, embedded as the `tv`
+  claim), every dashboard session **except the caller's own cookie session** is deleted (a Bearer caller must sign in again), and
+  `must_change_password` is cleared. Audit action `user.password_changed`.
+- `must_change_password` (on `user` in login/session/`GET /v1/me`/device poll and admin views): set for admin-generated temporary
+  passwords and by `POST /v1/admin/users/{id}/reset-password`, optional on `POST`/`PATCH /v1/admin/users`. While set, dashboard login
+  succeeds but only `GET /v1/me`, `POST /v1/me/password`, `GET /v1/auth/browser/session` and `POST /v1/auth/browser/logout` work;
+  everything else answers `403 password_change_required`. Desktop sign-in is refused: the `/device` page answers 403 with
+  instructions, `POST /v1/auth/device/approve` answers `403 password_change_required`, and a flow approved before the flag was set
+  polls as `{status: "denied", reason: "password_change_required", message}` without tokens.
+
 **Secrets:** `SLINGER_SIGNING_SECRET` (JWT signing key) MUST be read from env with no hardcoded fallback. If unset:
 - `NODE_ENV=production` → throw at startup and refuse to boot.
 - otherwise → generate a random ephemeral secret for that process run and log a loud warning that it's a dev-only secret that will invalidate all sessions on restart.
@@ -48,7 +61,7 @@ Compute `platformRole` (from the JWT) and `workspaceRole` (from the caller's mem
 |---|---|
 | Read workspace content (collections/folders/requests/environments/variables), sync pull | `platformRole ∈ {super_admin, platform_admin}` OR any active workspace membership (owner/admin/editor/viewer) |
 | Write workspace content (create/update/delete collections/folders/requests/environments/variables), sync push | `platformRole ∈ {super_admin, platform_admin}` OR `workspaceRole ∈ {owner, admin, editor}` |
-| Invite members, approve/reject join requests, revoke invites | `platformRole ∈ {super_admin, platform_admin}` OR `workspaceRole ∈ {owner, admin}` |
+| Invite members, approve/reject join requests, revoke invites | `platformRole ∈ {super_admin, platform_admin}` OR `workspaceRole ∈ {owner, admin}`; a member never grants a role above their own. Approving without a `role` grants the workspace's `default_role_for_requests` (`viewer`/`editor`); the requester's `requested_role` is only a hint |
 | Change a member's role, remove a member, manage hosts | `platformRole ∈ {super_admin, platform_admin}` OR `workspaceRole = owner` (admins can invite/approve but not reassign roles or remove people, per README's role table) |
 | Delete workspace | `platformRole = super_admin` OR `workspaceRole = owner` |
 | `/v1/admin/*` platform routes | `platformRole ∈ {super_admin, platform_admin}` only; user-role-mutation endpoints (`POST /v1/admin/users` with `platform_role`, promoting to platform_admin) require `platformRole = super_admin` |

@@ -8,6 +8,7 @@
  *   admin@example.com   platform_admin
  *   owner@example.com   user (owner of "Acme Core API")
  *   editor@example.com  user (editor in "Acme Core API")
+ *   temp@example.com    user with must_change_password (lands on "Choose a new password")
  *
  * Dev hooks on `window.__mock`: expireSession(), failNext(status, body?), latency(ms), reset(), healthDown(bool)
  * (GET /admin/health then answers 503 with postgres: down), touchWorkspace(id) (bumps its version, to provoke a settings conflict).
@@ -15,7 +16,7 @@
 import type { HttpClient } from '../lib/api/client';
 
 type Json = Record<string, unknown>;
-interface U { disabled?: boolean; id: string; email: string; display_name: string; platform_role: 'super_admin' | 'platform_admin' | 'user'; password: string; created_at: string; updated_at: string }
+interface U { disabled?: boolean; must_change_password?: boolean; id: string; email: string; display_name: string; platform_role: 'super_admin' | 'platform_admin' | 'user'; password: string; created_at: string; updated_at: string }
 interface W { id: string; slug: string; name: string; description: string; owner_user_id: string; visibility: string; host_mode: string; created_at: string; updated_at: string; version: number }
 interface M { id: string; workspace_id: string; user_id: string; role: string; status: string; joined_at: string; created_at: string; updated_at: string; version: number }
 interface I { id: string; workspace_id: string; email: string; role: string; status: string; expires_at: string; created_at: string; updated_at: string; version: number }
@@ -38,6 +39,7 @@ function seed(): Db {
     { id: uid(), email: 'owner@example.com', display_name: 'Olive Owner', platform_role: 'user', password: PASSWORD, created_at: iso(70000), updated_at: iso(70000) },
     { id: uid(), email: 'editor@example.com', display_name: 'Eddie Editor', platform_role: 'user', password: PASSWORD, created_at: iso(60000), updated_at: iso(60000) },
   ];
+  users.push({ id: uid(), email: 'temp@example.com', display_name: 'Tia Temporary', platform_role: 'user', password: PASSWORD, must_change_password: true, created_at: iso(55000), updated_at: iso(55000) });
   for (let n = 1; n <= 41; n++) {
     users.push({ id: uid(), email: `person${n}@example.com`, display_name: `Person ${n}`, platform_role: 'user', password: PASSWORD, created_at: iso(50000 - n * 100), updated_at: iso(50000 - n * 100) });
   }
@@ -107,7 +109,7 @@ export function installMockApi(client: HttpClient) {
   const now = () => new Date().toISOString();
   const me = () => db.users.find((u) => u.id === sessionUser) ?? null;
   const isAdmin = (u: U | null) => !!u && u.platform_role !== 'user';
-  const pub = (u: U) => ({ id: u.id, email: u.email, display_name: u.display_name, platform_role: u.platform_role });
+  const pub = (u: U) => ({ id: u.id, email: u.email, display_name: u.display_name, platform_role: u.platform_role, must_change_password: !!u.must_change_password });
   const adminPub = (u: U) => ({ ...pub(u), disabled: !!u.disabled, created_at: u.created_at, updated_at: u.updated_at });
   const audit = (workspace_id: string | null, action: string, resource_type: string, resource_id: string, details: Json = {}) => {
     const u = me()!;
@@ -151,6 +153,18 @@ export function installMockApi(client: HttpClient) {
     if (!u) throw new HttpError(401, 'unauthenticated', 'authentication required');
     if (method !== 'GET' && headers.get('X-CSRF-Token') !== csrf) throw new HttpError(403, 'csrf_invalid', 'Missing or invalid CSRF token.');
     if (method === 'POST' && path === '/auth/browser/logout') { sessionUser = null; csrf = null; return { status: 200, json: { ok: true } }; }
+    if (method === 'GET' && path === '/me') return { status: 200, json: { user: pub(u), workspace_memberships: [] } };
+    if (method === 'POST' && path === '/me/password') {
+      const next = String(body.new_password ?? '');
+      if (body.current_password !== u.password) throw new HttpError(403, 'forbidden', 'current password is incorrect', { reason: 'invalid_current_password' });
+      if (next.length < 12) throw new HttpError(400, 'invalid_request', 'request validation failed', { issues: [{ path: 'new_password', message: 'password must be at least 12 characters' }] });
+      if (next === u.password) throw new HttpError(400, 'invalid_request', 'request validation failed', { issues: [{ path: 'new_password', message: 'the new password must differ from the current one' }] });
+      u.password = next; u.must_change_password = false; u.updated_at = now();
+      audit(null, 'user.password_changed', 'user', u.id, { via: 'cookie' });
+      return { status: 200, json: { ok: true } };
+    }
+    // Like the server: an admin-issued password must be replaced before anything else works.
+    if (u.must_change_password) throw new HttpError(403, 'password_change_required', 'You must choose a new password before continuing (POST /v1/me/password).');
 
     // ---- admin ----
     if (path.startsWith('/admin/')) {
@@ -174,9 +188,11 @@ export function installMockApi(client: HttpClient) {
           throw new HttpError(409, 'conflict', 'a resource with these unique values already exists');
         }
         const tempPw = Array.from(crypto.getRandomValues(new Uint8Array(15)), (b) => 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 56]).join('');
-        const nu: U = { id: uid(), email: String(body.email), display_name: String(body.display_name), platform_role: role as U['platform_role'], password: pw ?? tempPw, created_at: now(), updated_at: now() };
+        if (pw === null && body.must_change_password === false) throw new HttpError(400, 'invalid_request', 'request validation failed', { issues: [{ path: 'must_change_password', message: 'a generated temporary password must be changed at first sign-in' }] });
+        const mustChange = pw === null || body.must_change_password === true;
+        const nu: U = { id: uid(), email: String(body.email), display_name: String(body.display_name), platform_role: role as U['platform_role'], password: pw ?? tempPw, must_change_password: mustChange, created_at: now(), updated_at: now() };
         db.users.unshift(nu);
-        audit(null, 'admin.user_created', 'user', nu.id, { email: nu.email, platform_role: role });
+        audit(null, 'admin.user_created', 'user', nu.id, { email: nu.email, platform_role: role, must_change_password: mustChange });
         return { status: 201, json: { user: adminPub(nu), temporary_password: pw === null ? tempPw : null } };
       }
       const um = path.match(/^\/admin\/users\/([^/]+)$/);
@@ -193,9 +209,21 @@ export function installMockApi(client: HttpClient) {
         }
         if (body.disabled === true && t.id === u.id) throw new HttpError(403, 'forbidden', 'you cannot disable your own account');
         if (body.disabled !== undefined) t.disabled = body.disabled === true;
+        if (body.must_change_password !== undefined) t.must_change_password = body.must_change_password === true;
         t.updated_at = now();
         audit(null, body.platform_role !== undefined ? 'admin.user_role_changed' : 'admin.user_updated', 'user', t.id, { email: t.email, changes: body });
         return { status: 200, json: { user: adminPub(t) } };
+      }
+      const rp = path.match(/^\/admin\/users\/([^/]+)\/reset-password$/);
+      if (method === 'POST' && rp) {
+        const t = db.users.find((x) => x.id === rp[1]);
+        if (!t) throw new HttpError(404, 'not_found', 'user not found');
+        if (t.id === u.id) throw new HttpError(403, 'forbidden', 'use POST /v1/me/password to change your own password');
+        if (t.platform_role !== 'user' && u.platform_role !== 'super_admin') throw new HttpError(403, 'forbidden', "resetting a platform admin's password requires the super_admin role");
+        const tempPw = Array.from(crypto.getRandomValues(new Uint8Array(15)), (b) => 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 56]).join('');
+        t.password = tempPw; t.must_change_password = true; t.updated_at = now();
+        audit(null, 'admin.user_password_reset', 'user', t.id, { email: t.email });
+        return { status: 200, json: { user: adminPub(t), temporary_password: tempPw } };
       }
       if (method === 'GET' && path === '/admin/workspaces') {
         const q = (params.get('q') ?? '').toLowerCase();
@@ -300,7 +328,9 @@ export function installMockApi(client: HttpClient) {
         if (j.status !== 'pending') throw new HttpError(409, 'conflict', 'This request was already handled.');
         if (jm[2] === 'approve') {
           j.status = 'approved';
-          const mem: M = { id: uid(), workspace_id: wid, user_id: j.requester_user_id, role: String(body.role), status: 'active', joined_at: now(), created_at: now(), updated_at: now(), version: 1 };
+          // Like the server: no explicit role -> the workspace's default_role_for_requests (viewer unless set to editor).
+          const dflt = (w as W & { default_role_for_requests?: string }).default_role_for_requests === 'editor' ? 'editor' : 'viewer';
+          const mem: M = { id: uid(), workspace_id: wid, user_id: j.requester_user_id, role: typeof body.role === 'string' ? body.role : dflt, status: 'active', joined_at: now(), created_at: now(), updated_at: now(), version: 1 };
           db.members.push(mem);
           audit(wid, 'join_request.approved', 'join_request', j.id, { role: mem.role });
           return { status: 200, json: { membership: mem } };

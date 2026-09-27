@@ -23,7 +23,10 @@
     'join_request.approved', 'join_request.rejected',
     'host.added', 'host.verified', 'host.removed',
   ];
-  const ADMIN_ACTIONS = ['admin.user_created', 'admin.user_updated', 'admin.user_role_changed', 'admin.workspace_deleted'];
+  const ADMIN_ACTIONS = [
+    'admin.user_created', 'admin.user_updated', 'admin.user_role_changed', 'admin.user_password_reset', 'admin.workspace_deleted',
+    'user.password_changed',
+  ];
   const ACTIONS = $derived(showWorkspace ? [...ADMIN_ACTIONS, ...WORKSPACE_ACTIONS] : WORKSPACE_ACTIONS);
   /** `member.role_changed` -> "Member role changed" */
   const actionLabel = (a: string) => humanize(a.replace('.', ' '));

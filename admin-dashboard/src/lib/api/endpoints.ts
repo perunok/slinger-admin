@@ -19,6 +19,7 @@ import {
   verifyHostResponseSchema,
   memberSchema,
   pageSchema,
+  resetPasswordResponseSchema,
   userSchema,
   workspaceDetailSchema,
   workspaceSchema,
@@ -65,10 +66,34 @@ export function createApi(c: HttpClient) {
       session: () => c.request('GET', '/auth/browser/session', { schema: loginResponseSchema, handleUnauthorized: false }),
     },
 
+    me: {
+      /**
+       * Self-service password change. Errors: 403 `forbidden` + `details.reason: invalid_current_password`,
+       * 400 `invalid_request` (`details.issues` on `new_password`), 429 `rate_limited`. On success the server keeps this
+       * cookie session (and its CSRF token) and signs out every other session and device.
+       */
+      changePassword: (current_password: string, new_password: string) =>
+        c.request('POST', '/me/password', { body: { current_password, new_password }, schema: anyObjectSchema }),
+    },
+
     admin: {
       users: (p: ListParams) => list('/admin/users', userSchema, { order: 'desc', cursor: p.cursor, limit: p.limit, q: p.q }),
-      createUser: (input: { email: string; display_name: string; platform_role: PlatformRole; password?: string }) =>
-        c.request('POST', '/admin/users', { body: input, schema: createUserResponseSchema }),
+      createUser: (input: {
+        email: string;
+        display_name: string;
+        platform_role: PlatformRole;
+        password?: string;
+        /** Always true on the server when `password` is omitted (generated temporary password). */
+        must_change_password?: boolean;
+      }) => c.request('POST', '/admin/users', { body: input, schema: createUserResponseSchema }),
+      setMustChangePassword: (userId: string, must_change_password: boolean) =>
+        c.request('PATCH', `/admin/users/${enc(userId)}`, {
+          body: { must_change_password },
+          schema: z.object({ user: userSchema }),
+        }),
+      /** New temporary password (shown once), forces a change and signs the user out everywhere. */
+      resetPassword: (userId: string) =>
+        c.request('POST', `/admin/users/${enc(userId)}/reset-password`, { body: {}, schema: resetPasswordResponseSchema }),
       setUserDisabled: (userId: string, disabled: boolean) =>
         c.request('PATCH', `/admin/users/${enc(userId)}`, {
           body: { disabled },

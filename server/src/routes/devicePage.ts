@@ -6,7 +6,7 @@ import { z } from "zod";
 import { prisma } from "../db.js";
 import { AppError } from "../lib/errors.js";
 import { defineRoute } from "../lib/route.js";
-import { emailSchema, normalizeUserCode, verifyLogin } from "./auth.js";
+import { emailSchema, normalizeUserCode, PASSWORD_CHANGE_FIRST, verifyLogin } from "./auth.js";
 
 const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -73,14 +73,16 @@ export function registerDevicePage(app: FastifyInstance): void {
       method: "POST",
       url: "/device",
       summary: "Submit code + email + password (urlencoded form) to approve a device login",
-      description: "Rate limited per IP+email pair like the login endpoints.",
+      description:
+        "Rate limited per IP+email pair like the login endpoints. Accounts that must change an admin-issued password are " +
+        "refused (403 page with instructions) until they have done so in the dashboard.",
       tags: ["Auth"],
       auth: "public",
       body: formBody,
       bodyContentType: "application/x-www-form-urlencoded",
       contentType: "text/html; charset=utf-8",
       responses: { 200: z.string() },
-      errors: [400, 429],
+      errors: [400, 401, 403, 429],
       config: {
         rateLimit: {
           max: cfg.loginRateLimit.max,
@@ -107,6 +109,12 @@ export function registerDevicePage(app: FastifyInstance): void {
             return form(body.user_code, body.email, "Invalid email or password.");
           }
           throw err;
+        }
+        if (user.mustChangePassword) {
+          // Correct credentials, but an admin-issued password must be replaced first. The flow stays pending,
+          // so the same code works once the password has been changed (within its lifetime).
+          reply.code(403);
+          return form(body.user_code, body.email, PASSWORD_CHANGE_FIRST);
         }
         const claimed = await prisma.deviceFlow.updateMany({
           where: { id: flow.id, status: "pending" },

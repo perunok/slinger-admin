@@ -83,7 +83,7 @@ describe('UsersPage role-based UI', () => {
       expect(within(box).getByLabelText('Temporary password')).toHaveTextContent('Tmp-Secret-abc123XYZ');
       // no password was sent, so the server generated it
       const post = calls.find((c) => c.method === 'POST')!;
-      expect(post.body).toEqual({ email: 'new@example.com', display_name: 'New', platform_role: 'user' });
+      expect(post.body).toEqual({ email: 'new@example.com', display_name: 'New', platform_role: 'user', must_change_password: true });
       // copy button copies the secret but does not leak it into its accessible name
       const copy = within(box).getByRole('button', { name: 'Copy password' });
       await ev.click(copy);
@@ -119,6 +119,74 @@ describe('UsersPage role-based UI', () => {
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
       expect(calls.find((c) => c.method === 'POST')!.body).toMatchObject({ email: 'm@example.com', password: 'a-long-enough-password' });
       expect(screen.queryByTestId('temp-password')).toBeNull();
+    });
+  });
+
+  describe('must change password / reset password', () => {
+    it('create: the requirement is locked on for generated passwords and optional (default on) for manual ones', async () => {
+      session.user = user({ id: 'me', platform_role: 'super_admin' });
+      const calls = stubApi((r) => {
+        if (r.method === 'GET') return { json: adminUsers() };
+        if (r.method === 'POST') return { status: 201, json: { user: user({ id: 'new', email: 'm@example.com', display_name: 'M' }), temporary_password: null } };
+      });
+      render(UsersPage);
+      await screen.findByText('Two');
+      const ev = userEvent.setup();
+      await ev.click(screen.getByRole('button', { name: 'Create user' }));
+      const box = screen.getByLabelText('Require a password change at first sign-in');
+      expect(box).toBeChecked();
+      expect(box).toBeDisabled();
+      await ev.click(screen.getByLabelText('Set a password manually'));
+      expect(box).toBeEnabled();
+      expect(box).toBeChecked();
+      await ev.click(box);
+      await ev.type(screen.getByLabelText('Email'), 'm@example.com');
+      await ev.type(screen.getByLabelText('Display name'), 'M');
+      await ev.type(screen.getByLabelText('Initial password'), 'a-long-enough-password');
+      await ev.click(within(screen.getByRole('dialog', { hidden: true })).getByRole('button', { name: 'Create user', hidden: true }));
+      await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true));
+      expect(calls.find((c) => c.method === 'POST')!.body).toMatchObject({ password: 'a-long-enough-password', must_change_password: false });
+    });
+
+    it('the row checkbox PATCHes must_change_password; unavailable for yourself, the super admin and (for platform admins) other admins', async () => {
+      session.user = user({ id: 'pa', platform_role: 'platform_admin' });
+      const calls = stubApi((r) => {
+        if (r.method === 'GET') return { json: adminUsers() };
+        if (r.method === 'PATCH') return { json: { user: user({ id: 'u2', email: 'two@example.com', display_name: 'Two', must_change_password: true }) } };
+      });
+      render(UsersPage);
+      await screen.findByText('Two');
+      expect(screen.queryByLabelText('Require password change for pa@example.com')).toBeNull();
+      expect(screen.queryByLabelText('Require password change for me@example.com')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Reset password for me@example.com' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Reset password for pa@example.com' })).toHaveAttribute('title', 'Change your own password on the Account page');
+      await userEvent.setup().click(screen.getByLabelText('Require password change for two@example.com'));
+      await waitFor(() => expect(calls.some((c) => c.method === 'PATCH')).toBe(true));
+      const patch = calls.find((c) => c.method === 'PATCH')!;
+      expect(patch.path).toBe('/admin/users/u2');
+      expect(patch.body).toEqual({ must_change_password: true });
+      await waitFor(() => expect(screen.getByLabelText('Require password change for two@example.com')).toBeChecked());
+    });
+
+    it('reset asks for confirmation, then shows the new temporary password exactly once', async () => {
+      session.user = user({ id: 'me', platform_role: 'super_admin' });
+      const calls = stubApi((r) => {
+        if (r.method === 'GET') return { json: adminUsers() };
+        if (r.path === '/admin/users/u2/reset-password')
+          return { json: { user: user({ id: 'u2', email: 'two@example.com', display_name: 'Two', must_change_password: true }), temporary_password: 'Reset-Secret-987xyz' } };
+      });
+      render(UsersPage);
+      await screen.findByText('Two');
+      const ev = userEvent.setup();
+      await ev.click(screen.getByRole('button', { name: 'Reset password for two@example.com' }));
+      expect(screen.getByText(/signed out everywhere/)).toBeInTheDocument();
+      expect(calls.some((c) => c.method === 'POST')).toBe(false);
+      await ev.click(within(screen.getByRole('dialog', { hidden: true })).getByRole('button', { name: 'Reset password', hidden: true }));
+      const box = await screen.findByTestId('reset-password');
+      expect(within(box).getByLabelText('Temporary password')).toHaveTextContent('Reset-Secret-987xyz');
+      expect(screen.getByLabelText('Require password change for two@example.com')).toBeChecked();
+      await ev.click(screen.getByRole('button', { name: 'Done', hidden: true }));
+      await waitFor(() => expect(screen.queryByText('Reset-Secret-987xyz')).toBeNull());
     });
   });
 

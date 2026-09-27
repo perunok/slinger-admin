@@ -19,7 +19,8 @@ npm run build        # production bundle in dist/
 `VITE_MOCK_API=1` (used by `npm run dev:mock`) installs `src/dev/mockApi.ts` as the HTTP client's `fetch`. It enforces
 CSRF, cursor pagination and the error envelope, so the real client and zod schemas run unchanged. It is not part of
 production bundles. Accounts (password `password-12345`): `super@example.com` (super admin), `admin@example.com`
-(platform admin), `owner@example.com` (owner of Acme Core API), `editor@example.com` (editor there).
+(platform admin), `owner@example.com` (owner of Acme Core API), `editor@example.com` (editor there), `temp@example.com` (must
+change its password first).
 Handy hooks in the browser console: `__mock.expireSession()`, `__mock.failNext(502)`, `__mock.latency(ms)`,
 `__mock.reset()`.
 
@@ -54,7 +55,8 @@ src/
   lib/permissions.ts  authorization matrix from server/README.md
   lib/validation.ts   client-side form validation
   lib/components/   Button, fields, Modal (native <dialog>), ConfirmDialog, Toasts, ListState, AuditTable, ...
-  pages/            Overview, Users, Workspaces, WorkspaceDetail (+ workspace/ tabs), Audit
+  pages/            Overview, Users, Workspaces, WorkspaceDetail (+ workspace/ tabs), Audit, Account,
+                    ForcePasswordPage (shown instead of the shell while must_change_password is set)
   dev/mockApi.ts    fake API for VITE_MOCK_API=1
 ```
 
@@ -72,6 +74,14 @@ Design notes:
 - **Destructive / sensitive actions**: removing a host, disabling/enabling a user, deleting a workspace or member and revoking an
   invite go through `ConfirmDialog` (server errors stay in the dialog). A generated temporary password is held only in the open
   dialog state and its copy button keeps the value out of the accessible name.
+- **Passwords**: the user menu (name in the top bar) opens `#/account` with the change-password form (current, new, confirm; the
+  server's rules are listed; wrong current password, policy violations and rate limiting are shown on the form). After a change the
+  server keeps this browser's session and signs out every other session and device. Accounts with `must_change_password` (temporary
+  password from an admin) only get the "Choose a new password" screen; any `403 password_change_required` switches to it. On the Users
+  page admins can require a change at first sign-in (create dialog; always on for generated passwords), toggle "Must change" per
+  user, and reset a password (confirmation, the new temporary password is shown once).
+- **Join requests**: the role select preselects the workspace's "default role for requests" (what the server grants when no role is
+  sent) and only offers roles up to the approver's own.
 - **Workspace settings** (Overview tab, owner or platform admin): sends only changed fields with the loaded `version`; on
   `version_mismatch` it keeps the user's edits, shows who-changed-it guidance and offers "Load latest version".
 - **Platform health**: `GET /admin/health` may answer 503 with a valid body; the client treats that as data
@@ -81,9 +91,7 @@ Design notes:
 
 ## Known limitations
 
-- No "require password change" option when creating users: the server has no such flag (generated temporary passwords are
-  supported). Users can change their password through `POST /v1/me/password`; the dashboard has no UI for it.
-- The workspace setting "default role for requests" is stored by the server but not enforced.
+- No "forgot password" on the login screen (the server sends no email); an admin resets the password from the Users page.
 - With the real server, `GET /admin/health` can only answer 503 when the request was authenticated but the database ping failed
   (authentication itself needs the database), so a full outage shows the generic error; the e2e covers the 503 body by replaying it.
 

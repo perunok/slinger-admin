@@ -11,5 +11,9 @@ declare module "fastify" {
     /** Counter storage behind the credential-endpoint rate limiter. */
     rateLimitStore: RateLimitStore;
   }
+  interface FastifyContextConfig {
+    /** See `RouteSpec.allowWhilePasswordChangeRequired` (read by `authenticate`). */
+    allowWhilePasswordChangeRequired?: boolean;
+  }
 }
 export {};

@@ -32,6 +32,11 @@ export type RouteSpec<P extends ZAny | undefined, Q extends ZAny | undefined, B 
   bodyContentType?: string;
   /** Fastify route config (e.g. rate limit). */
   config?: Record<string, unknown>;
+  /**
+   * Keep the route usable while the caller's account must change its password (see `mustChangePassword`). Only for
+   * the handful of routes needed to change it: GET /v1/me, POST /v1/me/password, the session probe and logout.
+   */
+  allowWhilePasswordChangeRequired?: boolean;
   /** Per-route body size cap in bytes (overrides the server-wide limit; sync push uses a larger one). */
   bodyLimit?: number;
   handler: (c: {
@@ -69,7 +74,7 @@ export function defineRoute<
   app.route({
     method: spec.method,
     url: spec.url,
-    config: spec.config,
+    config: { ...spec.config, ...(spec.allowWhilePasswordChangeRequired && { allowWhilePasswordChangeRequired: true }) },
     ...(spec.bodyLimit !== undefined && { bodyLimit: spec.bodyLimit }),
     preHandler: [...(spec.auth === "user" ? [authenticate as preHandlerAsyncHookHandler] : []), ...(pre ?? [])],
     handler: async (req, reply) => {

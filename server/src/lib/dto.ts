@@ -14,7 +14,9 @@ export const SECRET_MASK = "••••••••";
 
 // ---------- response schemas (also published in openapi.yaml) ----------
 export const userSchema = z.object({
-  id, email: z.string(), display_name: z.string(), platform_role: platformRoleEnum
+  id, email: z.string(), display_name: z.string(), platform_role: platformRoleEnum,
+  /** True while an admin-issued password must be replaced (only GET /v1/me, POST /v1/me/password and logout work). */
+  must_change_password: z.boolean()
 });
 export const adminUserSchema = userSchema.extend({ disabled: z.boolean(), created_at: ts, updated_at: ts });
 
@@ -77,7 +79,8 @@ export const paged = <T extends z.ZodTypeAny>(item: T) => z.object({ items: z.ar
 const iso = (d: Date) => d.toISOString();
 
 export const toUser = (u: User) => ({
-  id: u.id, email: u.email, display_name: u.displayName, platform_role: u.platformRole
+  id: u.id, email: u.email, display_name: u.displayName, platform_role: u.platformRole,
+  must_change_password: u.mustChangePassword
 });
 export const toAdminUser = (u: User) => ({
   ...toUser(u), disabled: u.disabledAt !== null, created_at: iso(u.createdAt), updated_at: iso(u.updatedAt)

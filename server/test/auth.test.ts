@@ -28,7 +28,7 @@ describe("browser login (email + password)", () => {
     expect(cookie?.httpOnly).toBe(true);
     expect(cookie?.sameSite).toBe("Lax");
     expect(cookie?.secure).toBeFalsy(); // test env: SLINGER_COOKIE_SECURE defaults to false outside production
-    expect(JSON.stringify(res.json())).not.toContain("password");
+    expect(JSON.stringify(res.json())).not.toMatch(/password_hash|passwordHash|argon2|"password"/);
   });
 
   it("marks the cookie Secure when SLINGER_COOKIE_SECURE=true", async () => {

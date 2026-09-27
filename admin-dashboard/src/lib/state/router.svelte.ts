@@ -7,6 +7,7 @@ export type Route =
   | { name: 'workspaces' }
   | { name: 'workspace'; id: string; tab: WorkspaceTab }
   | { name: 'audit' }
+  | { name: 'account' }
   | { name: 'not-found'; path: string };
 
 /** Hash routing: refresh, back/forward and deep links all work without server support. */
@@ -17,6 +18,7 @@ export function parsePath(path: string): Route {
   if (parts.length === 0) return { name: 'overview' };
   if (a === 'users' && parts.length === 1) return { name: 'users' };
   if (a === 'audit' && parts.length === 1) return { name: 'audit' };
+  if (a === 'account' && parts.length === 1) return { name: 'account' };
   if (a === 'workspaces') {
     if (parts.length === 1) return { name: 'workspaces' };
     if (b && parts.length === 2) return { name: 'workspace', id: b, tab: 'overview' };
@@ -40,6 +42,7 @@ export const paths = {
   users: () => '/users',
   workspaces: () => '/workspaces',
   audit: () => '/audit',
+  account: () => '/account',
   workspace: (id: string, tab: WorkspaceTab = 'overview') =>
     tab === 'overview' ? `/workspaces/${encodeURIComponent(id)}` : `/workspaces/${encodeURIComponent(id)}/${tab}`,
 };

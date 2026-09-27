@@ -7,6 +7,7 @@
   import Toasts from './lib/components/Toasts.svelte';
   import LoginPage from './pages/LoginPage.svelte';
   import Shell from './lib/components/Shell.svelte';
+  import ForcePasswordPage from './pages/ForcePasswordPage.svelte';
 
   let { config }: { config: ApiConfig } = $props();
 
@@ -24,6 +25,8 @@
   <div class="boot" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span> Loading…</div>
 {:else if session.status === 'anonymous'}
   <LoginPage />
+{:else if session.mustChangePassword}
+  <ForcePasswordPage />
 {:else}
   <Shell />
 {/if}

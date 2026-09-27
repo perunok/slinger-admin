@@ -108,7 +108,7 @@
     {:else if tab === 'invites'}
       <WsInvites {id} {role} />
     {:else if tab === 'join-requests'}
-      <WsJoinRequests {id} {role} />
+      <WsJoinRequests {id} {role} defaultRole={detail.workspace.default_role_for_requests} />
     {:else if tab === 'hosts'}
       <WsHosts {id} {role} />
     {:else}

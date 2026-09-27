@@ -128,9 +128,10 @@ describe("join requests", () => {
 
     // stale version
     expect((await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests/${r1.id}/approve`, as: owner, body: { version: 99 } })).json().error.code).toBe("version_mismatch");
+    // no explicit role: the workspace default (viewer) applies, not the requested "editor"
     const ap = await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests/${r1.id}/approve`, as: owner, body: { version: r1.version } });
     expect(ap.statusCode).toBe(200);
-    expect(ap.json().membership).toMatchObject({ user_id: u1.id, role: "editor", status: "active" });
+    expect(ap.json().membership).toMatchObject({ user_id: u1.id, role: "viewer", status: "active" });
     expect((await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests/${r1.id}/approve`, as: owner, body: {} })).statusCode).toBe(409);
 
     const rej = await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests/${r2.id}/reject`, as: owner, body: {} });
@@ -139,6 +140,47 @@ describe("join requests", () => {
     expect((await call(app, { method: "GET", url: `/v1/workspaces/${ws.id}`, as: u2 })).statusCode).toBe(403);
     // after rejection the user may ask again
     expect((await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests`, as: u2, body: {} })).statusCode).toBe(201);
+  });
+
+  it("approval without a role grants default_role_for_requests; an explicit role wins; the source is audited", async () => {
+    const owner = await createUser();
+    const admin = await createUser();
+    const ws = await setupWorkspace(app, owner, [{ user: admin, role: "admin" }]);
+    const patched = await call(app, { method: "PATCH", url: `/v1/workspaces/${ws.id}`, as: owner, body: { default_role_for_requests: "editor", version: ws.version } });
+    expect(patched.json().workspace.default_role_for_requests).toBe("editor");
+    const [a, b, c] = [await createUser(), await createUser(), await createUser()];
+    const ask = async (u: typeof a, requested_role: string) =>
+      (await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests`, as: u, body: { requested_role } })).json().join_request;
+    const ra = await ask(a, "viewer");
+    const rb = await ask(b, "admin");
+    const rc = await ask(c, "viewer");
+
+    // a workspace admin approving without a role: the default (editor) applies, even though "viewer"/"admin" was requested
+    const apA = await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests/${ra.id}/approve`, as: admin, body: {} });
+    expect(apA.json().membership.role).toBe("editor");
+    const apB = await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests/${rb.id}/approve`, as: owner, body: {} });
+    expect(apB.json().membership.role).toBe("editor");
+    // an explicit role wins (an admin may grant up to admin)
+    const apC = await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests/${rc.id}/approve`, as: admin, body: { role: "admin" } });
+    expect(apC.json().membership.role).toBe("admin");
+    // owner can never be granted through an approval
+    const d = await createUser();
+    const rd = await ask(d, "viewer");
+    expect((await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests/${rd.id}/approve`, as: owner, body: { role: "owner" } })).statusCode).toBe(400);
+
+    const logs = (await call(app, { method: "GET", url: `/v1/workspaces/${ws.id}/audit-logs?action=join_request.approved`, as: owner })).json().items;
+    expect(logs.find((l: any) => l.resource_id === ra.id).details).toMatchObject({ role: "editor", requested_role: "viewer", role_source: "workspace_default" });
+    expect(logs.find((l: any) => l.resource_id === rc.id).details).toMatchObject({ role: "admin", role_source: "explicit" });
+  });
+
+  it("the default role falls back to viewer if the stored value is not viewer/editor", async () => {
+    const owner = await createUser();
+    const ws = await setupWorkspace(app, owner);
+    await prisma.workspace.update({ where: { id: ws.id }, data: { defaultRoleForRequests: "owner" } });
+    const u = await createUser();
+    const jr = (await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests`, as: u, body: {} })).json().join_request;
+    const ap = await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests/${jr.id}/approve`, as: owner, body: {} });
+    expect(ap.json().membership.role).toBe("viewer");
   });
 
   it("existing members cannot request; unknown workspace is 404; requested_role=owner is rejected", async () => {

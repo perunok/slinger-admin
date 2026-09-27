@@ -12,6 +12,7 @@
   import WorkspacesPage from '../../pages/WorkspacesPage.svelte';
   import WorkspaceDetailPage from '../../pages/WorkspaceDetailPage.svelte';
   import AuditPage from '../../pages/AuditPage.svelte';
+  import AccountPage from '../../pages/AccountPage.svelte';
   import NotFound from '../../pages/NotFound.svelte';
   import Forbidden from '../../pages/Forbidden.svelte';
 
@@ -82,10 +83,10 @@
       </button>
       <div class="spacer"></div>
       <ThemePicker />
-      <div class="who">
+      <a class="who" href={hashHref(paths.account())} aria-current={route.name === 'account' ? 'page' : undefined} title="Account and password">
         <div class="name">{session.user?.display_name || session.user?.email}</div>
-        <div class="muted small">{session.platformRole ? platformRoleLabel[session.platformRole] : ''}</div>
-      </div>
+        <div class="muted small">{session.platformRole ? platformRoleLabel[session.platformRole] : ''} · Account</div>
+      </a>
       <Button size="sm" onclick={signOut} busy={logoutAction.pending}>Sign out</Button>
     </header>
 
@@ -96,6 +97,8 @@
         {#if admin}<UsersPage />{:else}<Forbidden />{/if}
       {:else if route.name === 'audit'}
         {#if admin}<AuditPage />{:else}<Forbidden />{/if}
+      {:else if route.name === 'account'}
+        <AccountPage />
       {:else if route.name === 'workspaces'}
         <WorkspacesPage />
       {:else if route.name === 'workspace'}
@@ -189,6 +192,14 @@
     text-align: right;
     line-height: 1.2;
     min-width: 0;
+    color: var(--text);
+    text-decoration: none;
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius);
+  }
+  .who:hover,
+  .who[aria-current='page'] {
+    background: var(--surface-hover);
   }
   .name {
     font-weight: 600;

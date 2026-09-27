@@ -39,12 +39,19 @@ const devicePollBody = z.object({ device_code: z.string().min(8).max(200) });
 const devicePollResponse = z.discriminatedUnion("status", [
   z.object({ status: z.literal("pending") }),
   z.object({ status: z.literal("expired") }),
+  // The account was approved but must change its (admin-issued) password first; no tokens are issued.
+  z.object({ status: z.literal("denied"), reason: z.literal("password_change_required"), message: z.string() }),
   tokenPairSchema.extend({ status: z.literal("approved"), user: userSchema.omit({}) })
 ]);
 const deviceApproveBody = z.object({ user_code: z.string().trim().min(4).max(16) });
 const refreshBody = z.object({ refresh_token: z.string().min(8).max(500) });
 const loginBody = z.object({ email: emailSchema, password: passwordInput });
 const sessionResponse = z.object({ user: userSchema, csrf_token: z.string() });
+
+/** Shown when a desktop sign-in is refused because the account still has an admin-issued password. */
+export const PASSWORD_CHANGE_FIRST =
+  "Your password was set by an administrator and must be changed before you can sign in to the desktop app. " +
+  "Sign in to the Slinger Cloud dashboard, choose a new password, then start the desktop sign-in again.";
 
 export function normalizeUserCode(raw: string): string {
   const c = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -178,6 +185,9 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       method: "POST",
       url: "/v1/auth/device/poll",
       summary: "Poll a device login; returns tokens once approved (exactly once)",
+      description:
+        "`denied` (reason `password_change_required`) means the approving account must change its admin-issued password " +
+        "first; the flow is finished and no tokens are issued.",
       tags: ["Auth"],
       auth: "public",
       body: devicePollBody,
@@ -194,6 +204,10 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         if (!flow || flow.expiresAt <= new Date() || flow.status === "consumed") return { status: "expired" as const };
         if (flow.status === "pending" || !flow.user) return { status: "pending" as const };
         if (flow.user.disabledAt) return { status: "expired" as const };
+        if (flow.user.mustChangePassword) {
+          await prisma.deviceFlow.updateMany({ where: { id: flow.id, status: "approved" }, data: { status: "consumed" } });
+          return { status: "denied" as const, reason: "password_change_required" as const, message: PASSWORD_CHANGE_FIRST };
+        }
         const user = flow.user;
         const tokens = await prisma.$transaction(async (tx) => {
           const claimed = await tx.deviceFlow.updateMany({
@@ -227,7 +241,9 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     method: "POST",
     url: "/v1/auth/device/approve",
     summary: "Approve a pending device login (used by the dashboard for the signed-in user)",
-    description: "Binds the pending device flow with this `user_code` to the caller. Cookie callers must send X-CSRF-Token.",
+    description:
+      "Binds the pending device flow with this `user_code` to the caller. Cookie callers must send X-CSRF-Token. " +
+      "Refused with `403 password_change_required` while the caller must change their password.",
     tags: ["Auth"],
     auth: "user",
     body: deviceApproveBody,
@@ -271,6 +287,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     summary: "Dashboard logout: deletes the server-side session and clears the cookie",
     tags: ["Auth"],
     auth: "user",
+    allowWhilePasswordChangeRequired: true,
     responses: { 200: okSchema },
     errors: [401, 403],
     handler: async ({ req, reply }) => {
@@ -289,6 +306,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       "Only readable by allowlisted/same origins (CORS).",
     tags: ["Auth"],
     auth: "user",
+    allowWhilePasswordChangeRequired: true,
     responses: { 200: sessionResponse },
     errors: [400, 401],
     handler: async ({ req }) => {

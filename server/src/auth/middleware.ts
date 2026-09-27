@@ -13,6 +13,7 @@ export type AuthUser = {
   email: string;
   displayName: string;
   platformRole: PlatformRole;
+  mustChangePassword: boolean;
 };
 
 export type AuthContext = {
@@ -40,8 +41,21 @@ export const ROLE_RANK: Record<WorkspaceRole, number> = { viewer: 0, editor: 1, 
 
 const unauthenticated = (msg = "missing or invalid credentials") => new AppError("unauthenticated", msg);
 
-function toAuthUser(u: { id: string; email: string; displayName: string; platformRole: PlatformRole }): AuthUser {
-  return { id: u.id, email: u.email, displayName: u.displayName, platformRole: u.platformRole };
+function toAuthUser(u: {
+  id: string; email: string; displayName: string; platformRole: PlatformRole; mustChangePassword: boolean;
+}): AuthUser {
+  return { id: u.id, email: u.email, displayName: u.displayName, platformRole: u.platformRole, mustChangePassword: u.mustChangePassword };
+}
+
+/** While an admin-issued password is pending replacement, every other route answers 403 password_change_required. */
+function enforcePasswordChange(request: FastifyRequest, user: AuthUser): void {
+  if (!user.mustChangePassword) return;
+  // Route config flag set by `defineRoute({ allowWhilePasswordChangeRequired: true })`.
+  if (request.routeOptions.config?.allowWhilePasswordChangeRequired === true) return;
+  throw new AppError(
+    "password_change_required",
+    "You must choose a new password before continuing (POST /v1/me/password)."
+  );
 }
 
 /**
@@ -56,15 +70,19 @@ export async function authenticate(request: FastifyRequest): Promise<void> {
   if (header !== undefined) {
     const m = /^Bearer\s+(\S+)$/i.exec(header.trim());
     if (!m) throw unauthenticated("malformed Authorization header");
-    let sub: string;
+    let claims: { sub: string; tv?: number };
     try {
-      sub = (await verifyAccessToken(cfg.signingSecret, m[1]!)).sub;
+      claims = await verifyAccessToken(cfg.signingSecret, m[1]!);
     } catch {
       throw unauthenticated("invalid or expired access token");
     }
-    const user = await prisma.user.findUnique({ where: { id: sub } });
-    if (!user || user.disabledAt) throw unauthenticated("invalid or expired access token");
+    const user = await prisma.user.findUnique({ where: { id: claims.sub } });
+    // An older token version means the password was changed/reset or the account disabled since the token was issued.
+    if (!user || user.disabledAt || (claims.tv ?? 0) !== user.tokenVersion) {
+      throw unauthenticated("invalid or expired access token");
+    }
     request.auth = { method: "bearer", user: toAuthUser(user) };
+    enforcePasswordChange(request, request.auth.user);
     return;
   }
 
@@ -85,6 +103,7 @@ export async function authenticate(request: FastifyRequest): Promise<void> {
     }
   }
   request.auth = { method: "cookie", sessionId: session.id, user: toAuthUser(session.user) };
+  enforcePasswordChange(request, request.auth.user);
 }
 
 export type PlatformBypass = "admin" | "super_admin" | "none";

@@ -300,7 +300,9 @@ export function installMockApi(client: HttpClient) {
         if (j.status !== 'pending') throw new HttpError(409, 'conflict', 'This request was already handled.');
         if (jm[2] === 'approve') {
           j.status = 'approved';
-          const mem: M = { id: uid(), workspace_id: wid, user_id: j.requester_user_id, role: String(body.role), status: 'active', joined_at: now(), created_at: now(), updated_at: now(), version: 1 };
+          // Like the server: no explicit role -> the workspace's default_role_for_requests (viewer unless set to editor).
+          const dflt = (w as W & { default_role_for_requests?: string }).default_role_for_requests === 'editor' ? 'editor' : 'viewer';
+          const mem: M = { id: uid(), workspace_id: wid, user_id: j.requester_user_id, role: typeof body.role === 'string' ? body.role : dflt, status: 'active', joined_at: now(), created_at: now(), updated_at: now(), version: 1 };
           db.members.push(mem);
           audit(wid, 'join_request.approved', 'join_request', j.id, { role: mem.role });
           return { status: 200, json: { membership: mem } };

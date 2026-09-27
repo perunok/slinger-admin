@@ -2845,7 +2845,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-      description: "**Access:** workspace owner/admin, or platform admin."
+      description: |-
+        Without `role`, the workspace's `default_role_for_requests` is granted (the requester's `requested_role` is only a hint shown to the approver). Nobody can grant a role above their own: a workspace admin grants at most `admin`.
+
+        **Access:** workspace owner/admin, or platform admin.
       parameters:
         - name: workspaceId
           in: path

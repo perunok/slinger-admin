@@ -38,6 +38,31 @@ describe('WsJoinRequests', () => {
     expect(within(screen.getByText('A').closest('tr')!).queryByRole('button', { name: /approve/i })).toBeNull();
   });
 
+  it("preselects the workspace's default role (not the requested one) and sends it", async () => {
+    session.user = user({ platform_role: 'user' });
+    const calls = stubApi((r) => {
+      if (r.method === 'GET') return { json: { items: [{ ...jr('a'), requested_role: 'admin' }], page: { next_cursor: null, has_more: false } } };
+      if (r.path.endsWith('/approve')) return { json: { membership: { id: 'm', role: 'editor' } } };
+    });
+    render(WsJoinRequests, { props: { id: 'w1', role: 'admin', defaultRole: 'editor' } });
+    const row = (await screen.findByText('A')).closest('tr')!;
+    expect(within(row).getByText('Asked for Admin')).toBeInTheDocument();
+    expect(within(row).getByRole('combobox')).toHaveValue('editor');
+    expect(screen.getByText(/workspace default role/i)).toHaveTextContent('Editor');
+    await userEvent.setup().click(within(row).getByRole('button', { name: /approve a/i }));
+    await waitFor(() => expect(calls.some((c) => c.path.endsWith('/approve'))).toBe(true));
+    expect(calls.find((c) => c.path.endsWith('/approve'))!.body).toEqual({ role: 'editor', version: 2 });
+  });
+
+  it('defaults to viewer when the workspace has no editor default', async () => {
+    session.user = user({ platform_role: 'platform_admin' });
+    stubApi(() => ({ json: { items: [{ ...jr('a'), requested_role: 'editor' }], page: { next_cursor: null, has_more: false } } }));
+    render(WsJoinRequests, { props: { id: 'w1', role: null, defaultRole: 'viewer' } });
+    const row = (await screen.findByText('A')).closest('tr')!;
+    expect(within(row).getByRole('combobox')).toHaveValue('viewer');
+    expect(within(row).getAllByRole('option').map((o) => o.textContent)).toEqual(['Admin', 'Editor', 'Viewer']);
+  });
+
   it('is read-only for roles that cannot moderate', async () => {
     session.user = user({ platform_role: 'user' });
     stubApi(() => ({ json: { items: [jr('a')], page: { next_cursor: null, has_more: false } } }));

@@ -45,6 +45,18 @@ export const canDeleteWorkspace = (p: Role, w: WsRole) => isSuperAdmin(p) || w =
 /** Roles that can be granted through invites / approvals / role changes ("owner" is never assignable here). */
 export const ASSIGNABLE_WORKSPACE_ROLES: WorkspaceRole[] = ['admin', 'editor', 'viewer'];
 
+const WS_RANK: Record<WorkspaceRole, number> = { viewer: 0, editor: 1, admin: 2, owner: 3 };
+
+/**
+ * Roles the caller may grant through an invite or a join-request approval: never above their own workspace role
+ * (platform admins may grant every assignable role). Mirrors `assertCanGrant` in server/src/routes/membership.ts.
+ */
+export function grantableWorkspaceRoles(p: Role, w: WsRole): WorkspaceRole[] {
+  if (isPlatformAdmin(p)) return ASSIGNABLE_WORKSPACE_ROLES;
+  if (!w) return [];
+  return ASSIGNABLE_WORKSPACE_ROLES.filter((r) => WS_RANK[r] <= WS_RANK[w]);
+}
+
 /** An owner row is locked: the workspace must always keep its owner and ownership transfer is not offered. */
 export const isOwnerLocked = (memberRole: WorkspaceRole) => memberRole === 'owner';
 

@@ -67,4 +67,12 @@ describe('authorization matrix', () => {
     expect(p.disableUserPolicy(plain, { id: 'x', platform_role: 'user' })).toMatchObject({ allowed: false });
     expect(p.disableUserPolicy(null, plain)).toMatchObject({ allowed: false });
   });
+
+  it('grantableWorkspaceRoles never exceeds the caller\'s own role', () => {
+    expect(p.grantableWorkspaceRoles('platform_admin', null)).toEqual(['admin', 'editor', 'viewer']);
+    expect(p.grantableWorkspaceRoles('user', 'owner')).toEqual(['admin', 'editor', 'viewer']);
+    expect(p.grantableWorkspaceRoles('user', 'admin')).toEqual(['admin', 'editor', 'viewer']);
+    expect(p.grantableWorkspaceRoles('user', 'editor')).toEqual(['editor', 'viewer']);
+    expect(p.grantableWorkspaceRoles('user', null)).toEqual([]);
+  });
 });

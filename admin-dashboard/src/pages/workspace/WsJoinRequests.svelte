@@ -7,7 +7,7 @@
   import { Action } from '../../lib/state/action.svelte';
   import { session } from '../../lib/state/session.svelte';
   import { toasts } from '../../lib/state/toasts.svelte';
-  import { ASSIGNABLE_WORKSPACE_ROLES, canModerateMembership } from '../../lib/permissions';
+  import { canModerateMembership, grantableWorkspaceRoles } from '../../lib/permissions';
   import { formatDate, humanize, statusTone } from '../../lib/format';
   import ListState from '../../lib/components/ListState.svelte';
   import LoadMore from '../../lib/components/LoadMore.svelte';
@@ -15,8 +15,19 @@
   import Badge from '../../lib/components/Badge.svelte';
   import ConfirmDialog from '../../lib/components/ConfirmDialog.svelte';
 
-  let { id, role }: { id: string; role: WorkspaceRole | null } = $props();
+  let {
+    id,
+    role,
+    defaultRole = 'viewer',
+  }: {
+    id: string;
+    role: WorkspaceRole | null;
+    /** The workspace's `default_role_for_requests`: what the server grants when no role is chosen. */
+    defaultRole?: string | null;
+  } = $props();
   const canModerate = $derived(canModerateMembership(session.platformRole, role));
+  // Never offer a role above the approver's own (the server enforces the same rule).
+  const grantable = $derived(grantableWorkspaceRoles(session.platformRole, role));
 
   let status = $state<'pending' | 'all'>('pending');
   const pager = new Paginator<JoinRequest>((cursor) =>
@@ -29,10 +40,10 @@
 
   const who = (r: JoinRequest) => r.requester_display_name || r.requester_email || r.requester_user_id;
 
-  // Role chosen per request for approval; defaults to what was requested (never owner).
+  // Role chosen per request for approval; preselects the workspace default (the requested role is only shown as a hint).
   let chosen = $state<Record<string, WorkspaceRole>>({});
-  const roleFor = (r: JoinRequest): WorkspaceRole =>
-    chosen[r.id] ?? (r.requested_role && r.requested_role !== 'owner' ? r.requested_role : 'viewer');
+  const preset = $derived<WorkspaceRole>(defaultRole === 'editor' ? 'editor' : 'viewer');
+  const roleFor = (r: JoinRequest): WorkspaceRole => chosen[r.id] ?? preset;
 
   // One in-flight operation per request row.
   let busy = $state<Record<string, 'approve' | 'reject' | undefined>>({});
@@ -69,7 +80,10 @@
 </script>
 
 <div class="row between head">
-  <p class="muted">People asking to join this workspace.</p>
+  <p class="muted">
+    People asking to join this workspace. New members get the workspace default role
+    (<strong>{humanize(preset)}</strong>, changeable in the Overview settings) unless you pick another one.
+  </p>
   <div class="field">
     <label class="sr-only" for="jr-status">Show</label>
     <select id="jr-status" class="select" bind:value={status}>
@@ -110,7 +124,7 @@
                     value={roleFor(r)}
                     onchange={(e) => (chosen[r.id] = e.currentTarget.value as WorkspaceRole)}
                   >
-                    {#each ASSIGNABLE_WORKSPACE_ROLES as ro (ro)}<option value={ro}>{humanize(ro)}</option>{/each}
+                    {#each grantable as ro (ro)}<option value={ro}>{humanize(ro)}</option>{/each}
                   </select>
                   <Button
                     size="sm"

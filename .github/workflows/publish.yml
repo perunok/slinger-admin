@@ -8,6 +8,8 @@ name: Publish images
 #   variable DOCKERHUB_NAMESPACE   Docker Hub user or organisation that owns the repositories
 #   secret   DOCKERHUB_USERNAME    account that pushes
 #   secret   DOCKERHUB_TOKEN       Docker Hub access token with read/write access (not the account password)
+#
+# The repository overview on Docker Hub is published separately by dockerhub-description.yml.
 on:
   push:
     tags: ['v*']

@@ -62,6 +62,10 @@ docker compose up -d --no-build
 Pin `X.Y` (or `X.Y.Z`) rather than `latest` so an update only happens when you change the tag. Images built elsewhere work the
 same way (`docker load`, then the two variables).
 
+The Docker Hub overview pages come from `deploy/dockerhub/*.md` and are pushed by
+`.github/workflows/dockerhub-description.yml` whenever those files change on master. Their quick start needs only
+`docker-compose.yml`, `.env.example` and `deploy/Caddyfile` from a release tag, no checkout.
+
 ## What the proxy routes
 
 | Path | Goes to |

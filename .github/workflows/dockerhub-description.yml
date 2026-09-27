@@ -1,0 +1,37 @@
+name: Docker Hub description
+
+# Pushes the repository overview and short description of both Docker Hub images from deploy/dockerhub/*.md.
+# Runs when those files change on master, or manually. Uses the same repository settings as publish.yml; the access token
+# needs read, write and delete scope (Docker Hub requires it for description updates).
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'deploy/dockerhub/**'
+      - '.github/workflows/dockerhub-description.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  describe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: slinger-server
+            short: Slinger Cloud API server - self-hosted team sync for the Slinger desktop API client.
+          - image: slinger-admin-dashboard
+            short: Slinger Cloud admin dashboard - web UI for users, workspaces, members and invites.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ vars.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}
+          short-description: ${{ matrix.short }}
+          readme-filepath: deploy/dockerhub/${{ matrix.image }}.md

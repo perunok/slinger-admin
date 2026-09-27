@@ -33,6 +33,28 @@ describe("CORS", () => {
     expect(j(res).error.code).toBe("origin_not_allowed");
   });
 
+  it("does not refuse the device-login form because a dashboard cookie came along (Origin may be 'null' there)", async () => {
+    for (const origin of ["null", "https://evil.example"]) {
+      const res = await call(app, {
+        method: "POST",
+        url: "/device",
+        headers: { origin, cookie: "slinger_session=abc", "content-type": "application/x-www-form-urlencoded" },
+        body: "user_code=ABCD-EFGH&email=nobody%40example.test&password=wrong-password-123",
+      });
+      expect(res.statusCode).not.toBe(403);
+      expect(res.body).not.toContain("origin_not_allowed");
+    }
+    // Cookie-authenticated routes still refuse a foreign or null origin.
+    const me = await call(app, { method: "GET", url: "/v1/me", headers: { origin: "null", cookie: "slinger_session=abc" } });
+    expect(me.statusCode).toBe(403);
+    expect(j(me).error.code).toBe("origin_not_allowed");
+  });
+
+  it("sends Referrer-Policy: same-origin (no-referrer would make browsers send Origin: null on same-origin POSTs)", async () => {
+    const res = await call(app, { method: "GET", url: "/device" });
+    expect(res.headers["referrer-policy"]).toBe("same-origin");
+  });
+
   it("allows an allowlisted origin with credentials, echoing the exact origin", async () => {
     const pre = await call(app, { method: "OPTIONS", url: "/v1/me", headers: { origin: "https://dash.example.com", "access-control-request-method": "POST", "access-control-request-headers": "x-csrf-token,content-type" } });
     expect(pre.statusCode).toBe(204);

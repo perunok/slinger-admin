@@ -92,7 +92,7 @@ between runs. Every JSON response is additionally validated against its declared
 (`validateResponses`), which keeps `openapi.yaml` honest. Coverage includes: owner-vs-platform-admin boundaries, viewer blocked
 from every write incl. sync push, cross-workspace IDOR (404s), invite token/email binding, `version_mismatch`, CSRF (cookie vs
 Bearer), login rate limiting, CORS allowlist, request-id propagation, body cap, secret masking, cursor pagination on every
-list, audit-log writes, sync push/pull (incl. tombstones for cascaded folder/collection/environment deletes), sync v2 (`test/syncV2.test.ts`: sort_order, request moves, secret metadata, collection versions, snapshot with ~2k entities, limits, idempotent replays, two-client convergence, role matrix and cross-workspace IDOR), admin routes (incl. a disabled user's sessions,
+list, audit-log writes, sync push/pull (incl. tombstones for cascaded folder/collection/environment deletes), sync v2 (`test/syncV2.test.ts`: sort_order, request moves, secret metadata, collection versions, snapshot with ~2k entities, limits, idempotent replays, two-client convergence, role matrix and cross-workspace IDOR), sync extensions (`test/syncLocalOnly.test.ts`: scripts/docs, collection variables, globals, per-client shaping, caps, duplicate keys, cascades, secret metadata, roles, IDOR), admin routes (incl. a disabled user's sessions,
 access tokens and refresh tokens being rejected, and the 503 health body), hosts + DNS verification, the Postgres-backed rate limit
 store shared by two app instances, bootstrap validation and production config failures.
 
@@ -338,18 +338,23 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 
 Server side of `slinger/docs/SYNC_DESIGN.md` (section 14). Everything is additive: v1 clients keep working (they ignore `reason`,
 `current_payload`, `sort_order`, ...). Register (`POST /v1/sync/clients/register`) answers `protocol_version: 2` and
-`features: ["sort_order","snapshot","collection_version","secret_metadata","op_reasons","request_move"]`; a desktop that needs them
-must refuse to sync against a server that does not advertise `protocol_version >= 2`.
+`features: ["sort_order","snapshot","collection_version","secret_metadata","op_reasons","request_move","folder_scripts","docs",
+"collection_variables","globals"]`; a desktop that needs them must refuse to sync against a server that does not advertise
+`protocol_version >= 2`. The last four are the additive extensions below ("Extensions"): they are served only to clients that
+declare them.
 
 **Wire payloads** (identical in pull, snapshot and `current_payload`):
 
 | resource_type | payload |
 |---|---|
-| `collection`, `environment` | `{name}` |
-| `folder` | `{collection_id, parent_folder_id, name, sort_order}` |
+| `collection` | `{name}` + `{scripts_json}` (feature `folder_scripts`) + `{description, description_type}` (feature `docs`) |
+| `environment` | `{name}` |
+| `folder` | `{collection_id, parent_folder_id, name, sort_order}` + the same extension fields as a collection |
 | `request` | `{collection_id, folder_id, name, method, url, document_json, sort_order}` |
 | `environment_variable` | `{environment_id, key, value, is_secret}`; `value` is always `null` when `is_secret` |
 | `collection_version` | `{collection_id, semver, notes, snapshot_json, folder_count, request_count, created_at}` (immutable) |
+| `collection_variable` | `{collection_id, key, value, enabled, description, sort_order}` (feature `collection_variables`; never secret) |
+| `global_variable` | `{key, value, is_secret, enabled, description, sort_order}` (feature `globals`; `value` is always `null` when `is_secret`) |
 
 Upserts are partial for existing rows (omitted fields keep their value; `sort_order` defaults to 0 on create). Log entries written before
 v2 have no `sort_order` in their pull payload: treat a missing one as "unchanged / 0".
@@ -369,9 +374,9 @@ that v2 clients should branch on:
 | `version_mismatch` | `sync_conflict` | `base_version` differs from the server's | `current_version`, `current_payload` (server state, secrets masked): merge and retry with `base_version = current_version` |
 | `not_found` | `not_found` (delete / missing parent / target collection) or `sync_conflict` (edit of a row deleted on the server) | resource or parent does not exist **in this workspace** (other workspaces' rows look identical) | none |
 | `invalid` | `invalid_request` | validation failed (secret carrying a value, folder outside the target collection, folder cycle, non-token method, malformed JSON...) | message lists the issues |
-| `too_large` | `invalid_request` | an item exceeds a cap: `document_json` 900000 bytes, names 200 chars (request names 500), url 8192, variable key 128, `snapshot_json` 8000000 bytes | message names the field |
+| `too_large` | `invalid_request` | an item exceeds a cap: `document_json` 900000 bytes, names 200 chars (request names 500), url 8192, environment-variable key 128, `snapshot_json` 8000000 bytes, `scripts_json` / `description` 2097152 bytes, collection-variable/global key 256 chars, value 1000000 chars, description 100000 chars | message names the field |
 | `id_in_use` | `conflict` | the client-chosen id exists in another workspace (or as another type) | none |
-| `duplicate_key` | `conflict` | variable `(environment, key)` or version `(collection, semver)` already used by a different id | `conflicting_resource_id` |
+| `duplicate_key` | `conflict` | variable `(environment, key)`, collection variable `(collection, key)`, global `(workspace, key)` or version `(collection, semver)` already used by a different id | `conflicting_resource_id` |
 | `immutable` | `conflict` | `collection_version` update with different content | `current_version`, `current_payload` |
 | `forbidden` / `read_only` / `internal_error` | | reserved; viewer pushes are refused for the whole request (403), not per operation | |
 
@@ -397,6 +402,23 @@ then get 403 from every sync endpoint (clients treat that as "access revoked").
 (`null` on the last page, never an empty trailing page). `checkpoint` is read before the first page and repeated on every page. Rows can be
 newer than `checkpoint` (writes during the download); after the last page the client sets its checkpoint to it and pulls, applying only
 operations whose `resulting_version` is newer than what it holds. No tombstones.
+
+**Extensions** (slinger `docs/SYNC_DESIGN.md` section 21; additive, protocol stays 2): collection/folder scripts and docs, collection
+variables, workspace globals.
+- *Declaration*: the client lists the extension features it understands on every call: `features=a,b` query parameter on pull and
+  snapshot, `features: [...]` in the push body (optional and informational in the register body). Resource types of undeclared
+  features are left out of pull pages (the checkpoint still advances over them) and snapshots; undeclared collection/folder fields
+  are stripped from pull, snapshot and `current_payload`. Without a declaration a client sees exactly the wire of before. Pull and
+  snapshot answers repeat the server's `features` so clients notice an upgrade without registering again.
+- *Writes*: absent fields are unchanged (old clients never wipe scripts/docs; partial variable upserts keep the rest).
+  `scripts_json` must be a JSON array text or `null`, `description_type` is `text/markdown` / `text/plain` / `null`. Variable keys
+  are any 1..256 characters without leading/trailing whitespace (not the environment-variable key pattern). A collection
+  variable's `collection_id` is immutable (`invalid`); a collection outside the workspace is `not_found` (checked before the key
+  clash, so nothing leaks across workspaces). Secret globals are metadata only: `is_secret: true` with a value is `invalid`,
+  nothing is stored for them (`value` NULL), plaintext -> secret wipes the stored value.
+- *Cascades*: deleting a collection logs a tombstone per collection variable (before the collection's own); deleting a workspace
+  removes its globals (FK cascade, the log goes with it). Snapshot order appends `collection_variable`, `global_variable` after
+  `collection_version`.
 
 **Limits**: `SLINGER_SYNC_RATE_LIMIT_PER_MINUTE` (default 120 requests/user/minute over register, push, pull, snapshot) answers
 `429 rate_limited` + `Retry-After`. Other routes keep the 1 MB body cap.

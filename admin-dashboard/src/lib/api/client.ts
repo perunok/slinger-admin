@@ -37,6 +37,7 @@ export class HttpClient {
   private csrf: string | null = null;
   private unauthorizedHandler: ((reason: UnauthorizedReason) => void) | null = null;
   private unauthorizedFired = false;
+  private passwordChangeHandler: (() => void) | null = null;
 
   constructor(config: ClientConfig) {
     this.config = {
@@ -63,7 +64,11 @@ export class HttpClient {
   onUnauthorized(handler: ((reason: UnauthorizedReason) => void) | null) {
     this.unauthorizedHandler = handler;
   }
-  markAuthenticated() {
+  /** Called whenever the server answers 403 `password_change_required` (an admin-issued password must be replaced). */
+  onPasswordChangeRequired(handler: (() => void) | null) {
+    this.passwordChangeHandler = handler;
+  }
+    markAuthenticated() {
     this.unauthorizedFired = false;
   }
 
@@ -181,6 +186,7 @@ export class HttpClient {
     const kind = res.status === 401 ? 'unauthenticated' : 'http';
     if (res.status === 401 && handle401) this.fireUnauthorized('expired');
     else if (res.status === 403 && code === 'csrf_invalid') this.fireUnauthorized('csrf');
+    else if (res.status === 403 && code === 'password_change_required') this.passwordChangeHandler?.();
 
     return new ApiError({
       kind,

@@ -17,8 +17,25 @@ class SessionState {
     return this.user?.platform_role ?? null;
   }
 
+  /** The account signed in with an admin-issued password: only the "choose a new password" screen is shown. */
+  get mustChangePassword() {
+    return this.status === 'authenticated' && this.user?.must_change_password === true;
+  }
+
+  /** The server says the password must be changed first (e.g. an admin set the flag while we were signed in). */
+  requirePasswordChange() {
+    if (this.status !== 'authenticated' || !this.user) return;
+    this.user = { ...this.user, must_change_password: true };
+  }
+
+  /** After a successful POST /me/password: this session stays valid, the requirement is gone. */
+  passwordChanged() {
+    if (this.user) this.user = { ...this.user, must_change_password: false };
+  }
+
   /** Wires the client's global 401 handling to this store. Call once at start-up. */
   install() {
+    client.onPasswordChangeRequired(() => this.requirePasswordChange());
     client.onUnauthorized((reason) => {
       // Only meaningful while we believed we were signed in.
       if (this.status !== 'authenticated') return;

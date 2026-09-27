@@ -24,7 +24,31 @@ export function validateLogin(v: { email: string; password: string }): Errors<'e
   return e;
 }
 
+/** Mirrors the server policy (`server/src/routes/me.ts`): 12-256 characters. */
 export const MIN_PASSWORD = 12;
+export const MAX_PASSWORD = 256;
+
+/** Human-readable password rules, shown next to every "new password" field. */
+export const PASSWORD_RULES = [
+  `At least ${MIN_PASSWORD} characters (at most ${MAX_PASSWORD}).`,
+  'Different from your current password.',
+  'A long passphrase of several unrelated words is easiest to remember.',
+];
+
+export function validatePasswordChange(v: {
+  current: string;
+  next: string;
+  confirm: string;
+}): Errors<'current' | 'next' | 'confirm'> {
+  const e: Errors<'current' | 'next' | 'confirm'> = {};
+  if (!v.current) e.current = 'Enter your current password.';
+  if (!v.next) e.next = 'Enter a new password.';
+  else if (v.next.length < MIN_PASSWORD) e.next = `The new password must be at least ${MIN_PASSWORD} characters.`;
+  else if (v.next.length > MAX_PASSWORD) e.next = `The new password must be at most ${MAX_PASSWORD} characters.`;
+  else if (v.current && v.next === v.current) e.next = 'The new password must differ from the current one.';
+  if (!e.next && v.confirm !== v.next) e.confirm = 'The passwords do not match.';
+  return e;
+}
 
 export function validateNewUser(v: {
   email: string;
@@ -42,6 +66,7 @@ export function validateNewUser(v: {
   if (v.generate) return e;
   if (!v.password) e.password = 'Password is required.';
   else if (v.password.length < MIN_PASSWORD) e.password = `Password must be at least ${MIN_PASSWORD} characters.`;
+  else if (v.password.length > MAX_PASSWORD) e.password = `Password must be at most ${MAX_PASSWORD} characters.`;
   return e;
 }
 

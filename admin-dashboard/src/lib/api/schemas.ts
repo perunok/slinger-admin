@@ -16,6 +16,11 @@ export const userSchema = z.object({
   email: z.string(),
   display_name: z.string().nullish(),
   platform_role: platformRoleSchema,
+  /**
+   * True while an admin-issued (temporary) password must be replaced. The server then refuses everything except
+   * GET /me, POST /me/password, the session probe and logout (403 `password_change_required`).
+   */
+  must_change_password: z.boolean().optional(),
   /** Only on admin views (`/admin/users`). */
   disabled: z.boolean().optional(),
   created_at: z.string().optional(),
@@ -32,6 +37,12 @@ export const loginResponseSchema = z.object({
 export const createUserResponseSchema = z.object({
   user: userSchema,
   temporary_password: z.string().nullish(),
+});
+
+/** POST /v1/admin/users/{id}/reset-password: the new temporary password is returned exactly once. */
+export const resetPasswordResponseSchema = z.object({
+  user: userSchema,
+  temporary_password: z.string().min(1),
 });
 
 export const workspaceSchema = z.object({

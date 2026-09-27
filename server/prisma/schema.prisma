@@ -60,6 +60,10 @@ model User {
   passwordHash String?
   platformRole PlatformRole @default(user)
   disabledAt   DateTime?
+  /// Set for admin-issued (temporary) passwords; while true the account may only call GET /v1/me, POST /v1/me/password and logout.
+  mustChangePassword Boolean @default(false)
+  /// Embedded in access tokens (`tv` claim); bumping it invalidates every access token issued before (password change/reset, disable).
+  tokenVersion Int          @default(0)
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 

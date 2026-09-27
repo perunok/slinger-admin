@@ -152,6 +152,8 @@ model Workspace {
   requests       Request[]
   environments   Environment[]
   syncOperations SyncOperation[]
+  collectionVariables CollectionVariable[]
+  globalVariables     GlobalVariable[]
 
   @@map("workspaces")
 }
@@ -235,13 +237,19 @@ model Collection {
   workspaceId String
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   name        String
+  // Collection-level Postman scripts (`event` array as JSON text) and documentation, synced from the desktop
+  // (sync features `folder_scripts` / `docs`). NULL = none.
+  scriptsJson     String?
+  description     String?
+  descriptionType String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   version     Int       @default(1)
 
-  folders  Folder[]
-  requests Request[]
-  versions CollectionVersion[]
+  folders   Folder[]
+  requests  Request[]
+  versions  CollectionVersion[]
+  variables CollectionVariable[]
 
   @@index([workspaceId])
   @@index([workspaceId, id])
@@ -280,6 +288,10 @@ model Folder {
   childFolders   Folder[]   @relation("FolderParent")
   name           String
   sortOrder      Int        @default(0)
+  // Folder-level scripts and documentation (see Collection).
+  scriptsJson     String?
+  description     String?
+  descriptionType String?
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
   version        Int        @default(1)
@@ -346,6 +358,48 @@ model EnvironmentVariable {
 
   @@unique([environmentId, key])
   @@map("environment_variables")
+}
+
+// Persisted collection variables (Postman `variable` array of a collection), synced from the desktop
+// (sync feature `collection_variables`). Never secret.
+model CollectionVariable {
+  id           String     @id @default(uuid())
+  workspaceId  String
+  workspace    Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  collectionId String
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  key          String
+  value        String     @default("")
+  enabled      Boolean    @default(true)
+  description  String?
+  sortOrder    Int        @default(0)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  version      Int        @default(1)
+
+  @@unique([collectionId, key])
+  @@index([workspaceId])
+  @@map("collection_variables")
+}
+
+// Workspace globals (`pm.globals`), synced from the desktop (sync feature `globals`). Secret globals travel and are
+// stored as metadata only: `value` is NULL when `isSecret` (values stay in each device's keychain).
+model GlobalVariable {
+  id          String    @id @default(uuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  key         String
+  value       String?
+  isSecret    Boolean   @default(false)
+  enabled     Boolean   @default(true)
+  description String?
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  version     Int       @default(1)
+
+  @@unique([workspaceId, key])
+  @@map("global_variables")
 }
 
 model SyncClient {

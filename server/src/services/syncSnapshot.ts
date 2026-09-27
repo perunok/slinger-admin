@@ -3,11 +3,15 @@ import { z } from "zod";
 import { AppError } from "../lib/errors.js";
 import { syncPayload } from "./content.js";
 import { resourceTypes } from "./syncApply.js";
+import { shapePayload, typeVisible, type ExtensionFeature } from "./syncFeatures.js";
 import type { SyncResourceType } from "./syncLog.js";
 
-/** Parents before children so a client can insert page by page without dangling references. */
+/**
+ * Parents before children so a client can insert page by page without dangling references. New types are appended
+ * (never inserted) so the type index inside older cursors keeps its meaning.
+ */
 export const SNAPSHOT_ORDER: readonly SyncResourceType[] = [
-  "collection", "environment", "folder", "request", "environment_variable", "collection_version"
+  "collection", "environment", "folder", "request", "environment_variable", "collection_version", "collection_variable", "global_variable"
 ];
 
 /** Soft cap on the payload bytes of one page (at least one entity is always returned). */
@@ -55,14 +59,19 @@ async function fetchRows(db: PrismaClient, wsId: string, type: SyncResourceType,
     case "environment_variable":
       return db.environmentVariable.findMany({ where: { environment: { workspaceId: wsId }, id: idAfter }, ...args });
     case "collection_version": return db.collectionVersion.findMany({ where: { workspaceId: wsId, id: idAfter }, ...args });
+    case "collection_variable": return db.collectionVariable.findMany({ where: { workspaceId: wsId, id: idAfter }, ...args });
+    case "global_variable": return db.globalVariable.findMany({ where: { workspaceId: wsId, id: idAfter }, ...args });
   }
 }
 
 /**
  * One page of the workspace's current state. Everything is scoped by `wsId` (the cursor carries no workspace),
- * so a cursor taken from another workspace can only ever yield this workspace's rows.
+ * so a cursor taken from another workspace can only ever yield this workspace's rows. Types and fields the client did
+ * not declare (`features`) are left out.
  */
-export async function readSnapshotPage(db: PrismaClient, wsId: string, rawCursor: string | undefined, limit: number) {
+export async function readSnapshotPage(
+  db: PrismaClient, wsId: string, rawCursor: string | undefined, limit: number, features: ReadonlySet<ExtensionFeature> = new Set()
+) {
   let cur: Cursor;
   if (rawCursor) {
     cur = decodeCursor(rawCursor);
@@ -78,6 +87,10 @@ export async function readSnapshotPage(db: PrismaClient, wsId: string, rawCursor
 
   scan: while (cur.t < SNAPSHOT_ORDER.length) {
     const type = SNAPSHOT_ORDER[cur.t]!;
+    if (!typeVisible(type, features)) {
+      cur = { c: cur.c, t: cur.t + 1, a: "" };
+      continue;
+    }
     const remaining = limit - entities.length;
     if (remaining <= 0) {
       // Page is full: only peek whether anything is left so the last page reports next_cursor = null.
@@ -92,7 +105,7 @@ export async function readSnapshotPage(db: PrismaClient, wsId: string, rawCursor
     const want = type === "collection_version" ? Math.min(remaining, VERSION_BATCH) : remaining;
     const rows = await fetchRows(db, wsId, type, cur.a, want + 1);
     for (const row of rows.slice(0, want)) {
-      const payload = syncPayload(type, row);
+      const payload = shapePayload(type, syncPayload(type, row), features);
       const size = JSON.stringify(payload).length + 200;
       if (entities.length > 0 && bytes + size > PAGE_BYTES) {
         next = encodeCursor(cur);

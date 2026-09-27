@@ -374,7 +374,7 @@ describe("snapshot", () => {
     const viewer = await createUser();
     const w = await setup([{ user: viewer, role: "viewer" }]);
     const empty = j(await call(app, { method: "GET", url: `${w.base}/snapshot?client_id=${w.client}`, as: w.owner }));
-    expect(empty).toEqual({ checkpoint: 0, entities: [], next_cursor: null });
+    expect(empty).toEqual({ checkpoint: 0, entities: [], next_cursor: null, features: expect.any(Array) });
 
     const ids = [newId(), newId(), newId(), newId()];
     await pushOk(w, ids.map((id) => colOp(id)));

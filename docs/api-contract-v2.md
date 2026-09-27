@@ -132,3 +132,22 @@ Authoritative design: `slinger/docs/SYNC_DESIGN.md` section 14. Server details a
 - **New endpoint** `GET /v1/workspaces/{workspaceId}/sync/snapshot?client_id&cursor&limit` (viewer+): `{checkpoint, entities:[{resource_type, resource_id, version, payload}], next_cursor}`.
 - **Rate limit**: sync endpoints are limited per user (default 120/min) -> `429` + `Retry-After`.
 - **Pull**: unchanged shape; pages are additionally capped at ~8 MiB of payload (`has_more` set), and log entries written before v2 lack `sort_order`.
+
+### Extensions: scripts, docs, collection variables, globals (additive, protocol version stays 2)
+
+Authoritative design: `slinger/docs/SYNC_DESIGN.md` section 21; details in `server/README.md` ("Extensions").
+
+- **Features** `folder_scripts`, `docs`, `collection_variables`, `globals` are added to the register `features` and returned as
+  `features` in every pull and snapshot response.
+- **Client declaration**: `?features=a,b` on pull/snapshot, `features: [...]` in the push body. Undeclared resource types are left
+  out (pull checkpoint still advances), undeclared collection/folder fields are stripped (pull, snapshot, `current_payload`), so
+  clients that declare nothing see the previous wire unchanged.
+- **Fields** on `collection` and `folder` payloads: `scripts_json` (Postman `event` array as JSON text, <= 2097152 bytes, or null),
+  `description` (<= 2097152 bytes, or null), `description_type` (`text/markdown` | `text/plain` | null). Absent = unchanged.
+- **New resource types**: `collection_variable` `{collection_id, key, value, enabled, description, sort_order}` (unique
+  `(collection, key)`, collection immutable, never secret) and `global_variable` `{key, value, is_secret, enabled, description,
+  sort_order}` (unique `(workspace, key)`; secrets are metadata only: `value: null`, never stored). Keys 1..256 characters (no
+  leading/trailing whitespace), values <= 1000000 characters, descriptions <= 100000 characters. Prisma models
+  `CollectionVariable`, `GlobalVariable`; migration `sync_local_only`.
+- **Cascades**: a collection delete logs a tombstone per collection variable; a workspace delete removes its globals.
+- No REST content endpoints for these yet (sync only).

@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 22
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            admin-dashboard/package-lock.json
+            e2e/package-lock.json
+      - run: npm --prefix server ci
+      - run: npm --prefix admin-dashboard ci
+      - run: npm --prefix e2e ci
+      - run: npx prisma generate
+        working-directory: server
+      - run: npm run typecheck
+
+  server-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: slinger_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # Throwaway service container; test/globalSetup.ts runs `prisma migrate deploy` against it first.
+      TEST_DATABASE_URL: postgresql://postgres:test@127.0.0.1:5432/slinger_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+        working-directory: server
+      # Includes the test that fails when openapi.yaml is stale.
+      - run: npm test
+        working-directory: server
+
+  dashboard-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: admin-dashboard/package-lock.json
+      - run: npm ci
+        working-directory: admin-dashboard
+      - run: npm test
+        working-directory: admin-dashboard
+      - run: npm run build
+        working-directory: admin-dashboard
+
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: e2e
+          POSTGRES_DB: slinger_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # e2e/run.mjs uses this database instead of starting its own docker container.
+      E2E_DATABASE_URL: postgresql://postgres:e2e@127.0.0.1:5432/slinger_e2e
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            admin-dashboard/package-lock.json
+            e2e/package-lock.json
+      - run: npm --prefix server ci
+      - run: npm --prefix admin-dashboard ci
+      - run: npm --prefix e2e ci
+      - run: npx playwright install --with-deps chromium
+        working-directory: e2e
+      - run: npm run e2e
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  docker-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # Same build contexts as docker-compose.yml; built only, never pushed.
+      - name: Build server image
+        run: docker build -t slinger-server:ci server
+      - name: Build dashboard image
+        run: docker build -t slinger-admin-dashboard:ci -f admin-dashboard/Dockerfile .

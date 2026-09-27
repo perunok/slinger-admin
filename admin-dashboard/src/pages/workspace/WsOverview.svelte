@@ -160,7 +160,7 @@
             { value: 'viewer', label: 'Viewer' },
             { value: 'editor', label: 'Editor' },
           ]}
-          hint="Stored on the workspace for clients. The server does not enforce it on join requests."
+          hint="Role given when a join request is approved without choosing one."
         />
         <div class="row">
           <Button type="submit" variant="primary" busy={saveAction.pending} disabled={!dirty}>Save settings</Button>

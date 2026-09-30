@@ -41,6 +41,20 @@ test('login: wrong password is rejected, correct one shows the overview with rea
   expect(stored.toLowerCase()).not.toContain('csrf');
 });
 
+test('bundled dashboard: served by the API server under its CSP, with no violations', async ({ page }) => {
+  const violations: string[] = [];
+  page.on('console', (m) => /Content Security Policy|Refused to/i.test(m.text()) && violations.push(m.text()));
+  page.on('pageerror', (e) => violations.push(e.message));
+  const res = await page.goto('/');
+  expect(new URL(page.url()).origin).toBe(new URL(env.api).origin);
+  expect(res?.headers()['content-security-policy']).toContain("script-src 'self'");
+  expect(res?.headers()['cache-control']).toBe('no-cache');
+  await uiLogin(page, env.admin.email, env.admin.password);
+  await page.getByRole('link', { name: 'Users' }).first().click();
+  await expect(page).toHaveURL(/#\/users/);
+  expect(violations).toEqual([]);
+});
+
 test('platform health: a 503 with the per-service body shows the breakdown, not "server unavailable"', async ({ page }) => {
   // The real server answers 503 with exactly this body when its database ping fails but the request was
   // authenticated (server/test/admin.test.ts covers the real route); a real outage cannot be provoked from here

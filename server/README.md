@@ -66,6 +66,7 @@ All variables are validated with zod at startup; **every** problem is reported i
 | `SLINGER_LOGIN_RATE_MAX` / `SLINGER_LOGIN_RATE_WINDOW_SECONDS` | `10` / `300` | per **IP + email** budget for credential endpoints, then `429 rate_limited` |
 | `SLINGER_RATE_LIMIT_STORE` | `memory` | where those counters live: `memory` (per process) or `postgres` (shared by every instance through the existing database, table `rate_limit_buckets`, no Redis needed). Set `postgres` as soon as you run more than one server instance. |
 | `SLINGER_LOG_LEVEL` | `info` | pino level. Authorization/Cookie/CSRF headers are redacted; query strings are not logged. |
+| `SLINGER_DASHBOARD_DIR` | unset | Built admin dashboard (`admin-dashboard/dist`, must contain `index.html`) served at `/` with its own CSP and caching; the server answers `/runtime-config.js` itself (API prefix `/api`). The Docker image sets it to `/app/dashboard`. Unset: API only. |
 | `SLINGER_SKIP_MIGRATIONS` | `0` | Docker entrypoint only: `1` skips `prisma migrate deploy` on boot |
 
 ## Migrations
@@ -99,7 +100,8 @@ store shared by two app instances, bootstrap validation and production config fa
 
 ## Docker / deployment
 
-`../docker-compose.yml` runs `postgres` + `server` + `admin-dashboard` behind `caddy` (only Caddy publishes ports):
+`../docker-compose.yml` runs `postgres` + `server` behind `caddy` (only Caddy publishes ports). The image is built from the
+repository root (`docker build -f server/Dockerfile .`) because it also builds the admin dashboard and serves it at `/`:
 
 ```bash
 cd ..                          # slinger-admin/
@@ -110,9 +112,11 @@ docker compose up -d --build
 Compose has **no default secrets** and refuses to start until they are set. The server image (`server/Dockerfile`) applies
 migrations on boot and has a `/healthz` (database-pinging) health check.
 
-Routing through Caddy (one origin): `/v1/*`, `/device`, `/healthz` go straight to the server (desktop app, device-login page,
-probes); `/api/*` goes to the server with the `/api` prefix stripped (this is what the dashboard uses, `VITE_API_BASE_URL=/api`);
-everything else is the dashboard.
+One origin, and Caddy passes everything through: the server answers `/v1/*` (desktop app), the same routes under `/api/v1/*`
+(what the dashboard calls; the prefix is stripped before routing), `/device` (device-login page), `/healthz` (probes) and the
+dashboard at `/`. Dashboard responses get their own `Content-Security-Policy` (scripts, styles and API calls from `'self'`) and
+caching (`/assets/*` is content-hashed and cached for a year, everything else revalidates); API responses keep `no-store` and
+the locked-down API policy.
 
 **HTTPS:** the default `deploy/Caddyfile` is **plain HTTP on :80, HTTPS is off** (auto_https disabled) with
 `SLINGER_COOKIE_SECURE=false`. For real deployments switch to `deploy/Caddyfile.https` (automatic Let's Encrypt): set

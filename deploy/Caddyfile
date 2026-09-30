@@ -1,10 +1,8 @@
 # DEFAULT: plain HTTP on :80 (HTTPS is OFF). Fine for a LAN / behind another TLS terminator / local trials.
 # For real deployments use deploy/Caddyfile.https (automatic Let's Encrypt) and set SLINGER_COOKIE_SECURE=true.
 #
-# Routing (one origin for everything, so the dashboard needs no CORS):
-#   /v1/*  /device  /device/*  /healthz  -> server   (desktop app API, device-login page, health probe)
-#   /api/*                               -> server   (same routes with the prefix stripped: what the dashboard uses)
-#   everything else                      -> admin-dashboard
+# Everything goes to the server: the API (/v1, /api/v1 for the dashboard, /device, /healthz) and the admin dashboard ("/").
+# The server sets its own security headers, so this only adds compression.
 {
 	auto_https off
 }
@@ -12,23 +10,7 @@
 :80 {
 	encode zstd gzip
 
-	header {
-		X-Content-Type-Options nosniff
-		Referrer-Policy same-origin
-		-Server
-	}
+	header -Server
 
-	@server path /v1/* /device /device/* /healthz
-	handle @server {
-		reverse_proxy server:8080
-	}
-
-	handle /api/* {
-		uri strip_prefix /api
-		reverse_proxy server:8080
-	}
-
-	handle {
-		reverse_proxy admin-dashboard:4173
-	}
+	reverse_proxy server:8080
 }

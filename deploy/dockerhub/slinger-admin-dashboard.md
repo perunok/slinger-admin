@@ -1,39 +1,19 @@
-# Slinger Cloud admin dashboard
+# Slinger Cloud admin dashboard (discontinued image)
 
-Web dashboard for a self-hosted **Slinger Cloud**, the team server behind the
-[Slinger](https://github.com/perunok/slinger) desktop API client (an open-source, local-first Postman alternative).
+**From v0.2.0 the admin dashboard is built into the server image
+[`perunm/slinger-server`](https://hub.docker.com/r/perunm/slinger-server).** This image is no longer published; its last tags
+are `0.1.1` / `0.1`, which only work with `perunm/slinger-server:0.1`.
 
-- **Platform admins:** users (create, disable, reset passwords, roles), all workspaces, audit log.
-- **Workspace owners and admins:** members and roles, invites, join requests, custom hosts, workspace settings, workspace audit
-  log.
-- **Everyone:** their workspaces (create new ones) and their own account and password.
+The server now serves the dashboard at `/` from the same origin as its API, so a Slinger Cloud setup is PostgreSQL, one server
+container and (for HTTPS) a reverse proxy. Follow the quick start on the
+[server page](https://hub.docker.com/r/perunm/slinger-server).
 
-Svelte 5 + TypeScript. MIT licensed. Source and docs:
-[github.com/perunok/slinger-admin](https://github.com/perunok/slinger-admin).
+## Moving from 0.1.x
 
-## This image needs the server
+1. Download the new `docker-compose.yml`, `deploy/Caddyfile` (and `deploy/Caddyfile.https` if you use HTTPS) from the
+   release: the old Caddyfiles still send `/` to the removed dashboard container.
+2. In `.env`, delete `SLINGER_ADMIN_DASHBOARD_IMAGE` and `VITE_API_BASE_URL`, and set `SLINGER_SERVER_IMAGE=perunm/slinger-server:0.2`.
+3. `docker compose pull server && docker compose up -d --no-build --remove-orphans`.
 
-The dashboard is only the web UI. It talks to the API server
-[`perunm/slinger-server`](https://hub.docker.com/r/perunm/slinger-server) and is meant to run behind the same reverse proxy,
-so the browser sees one origin (no CORS setup). **Follow the quick start on the
-[server page](https://hub.docker.com/r/perunm/slinger-server)**: its Docker Compose setup starts PostgreSQL, the server,
-this dashboard and a Caddy proxy together.
-
-## Tags
-
-`X.Y.Z` (one release), `X.Y` (newest patch, recommended) and `latest`, each for `linux/amd64` and `linux/arm64`. Run the same
-version as the server.
-
-## Container details
-
-| | |
-|---|---|
-| Port | `4173` (HTTP) |
-| `VITE_API_BASE_URL` | URL prefix in front of `/v1` for API calls. Default `/api`, which the bundled proxy strips before forwarding to the server. Read when the container starts, so no rebuild is needed. |
-
-Sign-in uses an httpOnly session cookie plus a CSRF token. Behind plain HTTP, set `SLINGER_COOKIE_SECURE=false` on the
-**server**, otherwise browsers drop the cookie and sign-in fails.
-
-With your own proxy instead of the bundled one, route `/api/*` (prefix stripped), `/v1/*`, `/device*` and `/healthz` to the
-server on port 8080 and everything else to this container on port 4173. The
-[deploy manual](https://github.com/perunok/slinger-admin/blob/master/deploy-manual.md) has the details.
+The database, URLs and all other settings stay the same, and desktop apps need no change. Details:
+[deploy manual, "Upgrading from v0.1.x"](https://github.com/perunok/slinger-admin/blob/master/deploy-manual.md#upgrading-from-v01x-two-images).

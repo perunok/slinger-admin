@@ -8,7 +8,7 @@ logs, content and sync for the Slinger desktop app.
 | **API server** | Node.js 22, TypeScript, Fastify 5, Prisma, PostgreSQL 16, zod, argon2, jose | [`server/`](server/README.md) |
 | **Admin dashboard** | Svelte 5 (runes), TypeScript, Vite, zod | [`admin-dashboard/`](admin-dashboard/README.md) |
 | **End-to-end test** | Playwright (Chromium) against the real stack | [`e2e/`](e2e/) |
-| **Deployment** | Docker Compose: postgres, server, dashboard, Caddy reverse proxy | [`docker-compose.yml`](docker-compose.yml), [`deploy/`](deploy/), [`deploy-manual.md`](deploy-manual.md) |
+| **Deployment** | One Docker image (`slinger-server`: API + bundled dashboard); Compose adds PostgreSQL and a Caddy reverse proxy for HTTPS | [`docker-compose.yml`](docker-compose.yml), [`deploy/`](deploy/), [`deploy-manual.md`](deploy-manual.md) |
 
 The earlier Go implementation has been removed; the TypeScript server is the only backend.
 
@@ -19,15 +19,21 @@ The earlier Go implementation has been removed; the TypeScript server is the onl
                     |                                   |
                     |   one origin (Caddy, :80/:443)    |
                     v                                   v
-   /  (everything else)  -> admin-dashboard (static, vite preview)
-   /api/*  (prefix stripped) ---+
-   /v1/*  /device  /healthz ----+--> server (Fastify, :8080) --> PostgreSQL
+                 server (Fastify, :8080) ----------------------> PostgreSQL
+                   /                  admin dashboard (built static files)
+                   /api/v1/*, /v1/*   API (the dashboard uses the /api prefix)
+                   /device, /healthz  device-login page, health probe
 ```
 
 - The dashboard is a static single-page app. It talks to the API under `/v1` with an **httpOnly session cookie plus
   `X-CSRF-Token`**. The desktop app uses `Authorization: Bearer` access tokens (device login + rotating refresh tokens).
-- Behind Caddy everything is **one origin** (dashboard at `/`, API at `/api/*` with the prefix stripped, desktop API at `/v1/*`), so
-  no CORS is needed. Cross-origin setups work through `SLINGER_ALLOWED_ORIGINS` (strict allowlist, never `*`).
+- The server serves the built dashboard itself (`SLINGER_DASHBOARD_DIR`, set in the Docker image), so everything is **one
+  origin** (dashboard at `/`, the same API at `/v1/*` and `/api/v1/*`) and no CORS is needed. Caddy only terminates HTTPS and
+  passes everything through. Cross-origin setups work through `SLINGER_ALLOWED_ORIGINS` (strict allowlist, never `*`).
+  Up to v0.1.x the dashboard was a separate `slinger-admin-dashboard` image; see
+  [deploy-manual.md, "Upgrading from v0.1.x"](deploy-manual.md#upgrading-from-v01x-two-images).
+- The dashboard runs under a strict Content-Security-Policy (scripts, styles and API calls from its own origin only), so it
+  must not use inline scripts.
 - All routes live in `server/src/routes`, each declared once with its zod schemas; the machine-readable contract
   [`server/openapi.yaml`](server/openapi.yaml) is generated from them (a test fails if it is stale).
 - The dashboard's whole API surface is `admin-dashboard/src/lib/api/endpoints.ts` + `schemas.ts`, documented and verified in
@@ -69,7 +75,9 @@ npm run dev
 Open <http://localhost:5173> and sign in with `admin@example.com` / `dev-only-passphrase-1`.
 
 - `npm run dev` proxies `/api/*` to `http://localhost:8080` (change with `SLINGER_API_PROXY`), so the browser sees a single
-  origin and needs no CORS, exactly like the Caddy setup.
+  origin and needs no CORS, exactly like the Docker image.
+- To try the production setup without Docker: `npm run build` in `admin-dashboard/`, then start the server with
+  `SLINGER_DASHBOARD_DIR=../admin-dashboard/dist` and open <http://localhost:8080>.
 - Cross-origin instead: `VITE_API_BASE_URL=http://localhost:8080 npm run dev` in `admin-dashboard/` and start the server with
   `SLINGER_ALLOWED_ORIGINS=http://localhost:5173`.
 - No backend at hand: `npm run dev:mock` runs the dashboard against an in-memory fake API (accounts listed in the dashboard README).
@@ -87,9 +95,9 @@ secrets and refuses to start until they are set. Only Caddy publishes ports. The
 `deploy/Caddyfile.https` with `SLINGER_DOMAIN`, `SLINGER_BASE_URL=https://...` and `SLINGER_COOKIE_SECURE=true`. Details,
 routing table, backups and upgrades: [`deploy-manual.md`](deploy-manual.md).
 
-Prebuilt multi-arch images (amd64 + arm64) are published to Docker Hub on every release tag by
-[`.github/workflows/publish.yml`](.github/workflows/publish.yml): `<namespace>/slinger-server` and
-`<namespace>/slinger-admin-dashboard`. To run them without building, see
+A prebuilt multi-arch image (amd64 + arm64) is published to Docker Hub on every release tag by
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml): `<namespace>/slinger-server` (API + dashboard). To run it
+without building, see
 [deploy-manual.md, "Or use the published images"](deploy-manual.md#or-use-the-published-images-no-local-build).
 
 ## Environment variables
@@ -111,7 +119,8 @@ The ones you will touch most:
 | `SLINGER_RATE_LIMIT_STORE` | server | `memory` (default, per process) or `postgres` (shared across instances) |
 | `POSTGRES_PASSWORD`, `POSTGRES_USER`, `POSTGRES_DB` | compose | Bundled PostgreSQL |
 | `SLINGER_CADDYFILE`, `SLINGER_DOMAIN`, `SLINGER_HTTP_PORT`, `SLINGER_HTTPS_PORT` | compose | Proxy config / published ports |
-| `VITE_API_BASE_URL` | dashboard | API prefix in front of `/v1` (`/api` with the bundled proxy). Container: runtime, via `runtime-config.js` |
+| `SLINGER_DASHBOARD_DIR` | server | Built dashboard to serve at `/` (the image sets it; unset = API only) |
+| `VITE_API_BASE_URL` | dashboard dev | API prefix in front of `/v1` for `npm run dev` (default `/api`). Served by the server, the dashboard always uses `/api` |
 | `SLINGER_API_PROXY` | dashboard dev | Target of the dev-server `/api` proxy (default `http://localhost:8080`) |
 | `E2E_DATABASE_URL` | e2e | Use this PostgreSQL instead of a throwaway container |
 | `E2E_SERVER_LOG_LEVEL`, `E2E_STREAM_LOGS` | e2e | Debugging: pino level of the e2e server and `1` to stream its log to the console |
@@ -122,7 +131,7 @@ The ones you will touch most:
 
 CI (`.github/workflows/ci.yml`, every push and pull request) runs the same checks: typecheck, server tests against a
 PostgreSQL service container, dashboard tests + build, the end-to-end suite (`E2E_DATABASE_URL` pointing at a service
-container) and a build of both Docker images.
+container) and a build of the Docker image.
 
 | What | Command | Needs |
 |---|---|---|

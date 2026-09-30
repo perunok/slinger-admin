@@ -1,5 +1,5 @@
-# Slinger Cloud: postgres + server (Node/TypeScript API) + admin dashboard, behind a Caddy reverse proxy.
-# Only the proxy publishes host ports. See server/README.md and deploy-manual.md.
+# Slinger Cloud: postgres + server (the API, which also serves the admin dashboard at "/"), behind a Caddy reverse proxy
+# that terminates HTTPS. Only the proxy publishes host ports. See server/README.md and deploy-manual.md.
 #
 #   cp .env.example .env   # then fill in every value marked REQUIRED
 #   docker compose up -d --build
@@ -23,7 +23,9 @@ services:
 
   server:
     build:
-      context: ./server
+      # Repository root: the image also builds the admin dashboard.
+      context: .
+      dockerfile: server/Dockerfile
     image: ${SLINGER_SERVER_IMAGE:-slinger-server:latest}
     restart: unless-stopped
     depends_on:
@@ -48,26 +50,11 @@ services:
     expose:
       - "8080"
 
-  admin-dashboard:
-    build:
-      context: .
-      dockerfile: admin-dashboard/Dockerfile
-    image: ${SLINGER_ADMIN_DASHBOARD_IMAGE:-slinger-admin-dashboard:latest}
-    restart: unless-stopped
-    environment:
-      # Same-origin API prefix served by the proxy (/api/* -> server, prefix stripped).
-      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
-    depends_on:
-      - server
-    expose:
-      - "4173"
-
   proxy:
     image: caddy:2-alpine
     restart: unless-stopped
     depends_on:
       - server
-      - admin-dashboard
     environment:
       SLINGER_DOMAIN: ${SLINGER_DOMAIN:-localhost}
     ports:

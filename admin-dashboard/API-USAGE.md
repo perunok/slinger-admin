@@ -10,7 +10,7 @@ matrix in [`../server/README.md`](../server/README.md).
 
 | | |
 |---|---|
-| Base | `{API_BASE_URL}/v1{path}`. `API_BASE_URL` comes from `runtime-config.js` (`/api` in the container; Caddy strips the prefix). In `npm run dev` it defaults to `/api`, which the Vite dev server proxies to `http://localhost:8080` (override with `SLINGER_API_PROXY`). |
+| Base | `{API_BASE_URL}/v1{path}`. `API_BASE_URL` comes from `runtime-config.js` (`/api` when served by the Slinger server, which strips the prefix itself). In `npm run dev` it defaults to `/api`, which the Vite dev server proxies to `http://localhost:8080` (override with `SLINGER_API_PROXY`). |
 | Credentials | Every request uses `credentials: 'include'`; the session is the httpOnly `slinger_session` cookie (`SameSite=Lax`, `Secure` per server config). |
 | CSRF | Every non-GET request sends `X-CSRF-Token`. The token is returned by `POST /auth/browser/login` and re-issued after a page reload by `GET /auth/browser/session` (HMAC-derived from the session id, so it is never stored in web storage). Missing/wrong token: `403 csrf_invalid` -> the UI returns to the login screen. |
 | Lists | `?cursor=&limit=&order=asc\|desc`, response `{ items, page: { next_cursor, has_more } }`. Server order is `(created_at, id)` ascending; the dashboard asks for `order=desc` (newest first) for users, workspaces, invites, join requests, hosts and audit logs, and keeps members oldest first. Limit defaults to 20 (max 100). |

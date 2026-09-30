@@ -27,23 +27,21 @@ Handy hooks in the browser console: `__mock.expireSession()`, `__mock.failNext(5
 ## Configuration
 
 The API base URL (the prefix in front of `/v1`) is resolved at runtime from `window.__SLINGER_API_BASE_URL__`, set by
-`/runtime-config.js`. In the container `entrypoint.sh` writes that file from `VITE_API_BASE_URL` (default `/api`,
-matching `deploy/Caddyfile`) before starting `vite preview`.
+`/runtime-config.js`. In production the dashboard is served by the Slinger server (`SLINGER_DASHBOARD_DIR`, see
+`server/README.md`), which answers `/runtime-config.js` itself with `/api`: same origin, and the server accepts `/api/v1/...`
+as well as `/v1/...`. The file in `public/` is only a placeholder.
 
 In a production build, a missing/invalid value shows a blocking "Dashboard is not configured" screen and no request is
 made; there is no `localhost` fallback. Only `npm run dev` falls back to `VITE_API_BASE_URL` / `/api` (proxied by Vite to `http://localhost:8080`, so the browser sees one origin and needs no CORS).
 To test cross-origin instead run `VITE_API_BASE_URL=http://localhost:8080 npm run dev` and start the server with `SLINGER_ALLOWED_ORIGINS=http://localhost:5173`.
 
-Docker (build context is the repository root; `.dockerignore` keeps host `node_modules` out):
+Docker: there is no dashboard image of its own. `server/Dockerfile` (build context: the repository root) runs `npm run build`
+here and copies `dist/` into the server image. To try that locally without Docker, `npm run build`, then start the server with
+`SLINGER_DASHBOARD_DIR=../admin-dashboard/dist`.
 
-```sh
-docker build -f admin-dashboard/Dockerfile -t slinger-admin-dashboard .
-docker run -p 4173:4173 -e VITE_API_BASE_URL=/api slinger-admin-dashboard
-```
-
-The manifests are copied and `npm ci` runs before the source is copied, so source-only changes reuse the dependency
-layer. `vite.config.ts` is shipped in the runtime image because `vite preview` needs `preview.allowedHosts`
-(the dashboard is served behind a proxy under an arbitrary hostname).
+The server sends a strict Content-Security-Policy for the dashboard (scripts, styles, images, fonts and API calls from its own
+origin only). Keep scripts in files: an inline `<script>` in `index.html` would be blocked (the theme bootstrap lives in
+`public/theme-init.js` for that reason).
 
 ## Structure
 

@@ -8,7 +8,7 @@ declare global {
 
 /**
  * Resolves the API base URL (the prefix in front of `/v1`).
- *  - Runtime config (`/runtime-config.js`, written by entrypoint.sh) wins.
+ *  - Runtime config (`/runtime-config.js`, answered by the Slinger server that serves the dashboard) wins.
  *  - In dev builds only, falls back to VITE_API_BASE_URL then `/api` (the Vite dev server proxies it to the API).
  *  - In production a missing/invalid value is an error; we never guess.
  */
@@ -31,7 +31,7 @@ export function resolveApiConfig(opts: {
     ok: false,
     reason:
       'runtime-config.js did not define window.__SLINGER_API_BASE_URL__. ' +
-      'Set VITE_API_BASE_URL on the dashboard container and make sure entrypoint.sh runs.',
+      'Serve the dashboard from the Slinger server (SLINGER_DASHBOARD_DIR), which answers /runtime-config.js.',
   };
 }
 

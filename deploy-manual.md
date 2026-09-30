@@ -45,38 +45,40 @@ The server applies database migrations on boot (`prisma migrate deploy`).
 
 ### Or use the published images (no local build)
 
-Every release tag publishes multi-arch images (linux/amd64 and linux/arm64) to Docker Hub as
-`<namespace>/slinger-server` and `<namespace>/slinger-admin-dashboard`, tagged `X.Y.Z`, `X.Y` and `latest`. Point compose at
-them in `.env` and pull instead of building:
+Every release tag publishes a multi-arch image (linux/amd64 and linux/arm64) to Docker Hub as `<namespace>/slinger-server`
+(the API with the admin dashboard built in), tagged `X.Y.Z`, `X.Y` and `latest`. Point compose at it in `.env` and pull instead
+of building:
 
 ```env
-SLINGER_SERVER_IMAGE=<namespace>/slinger-server:0.1
-SLINGER_ADMIN_DASHBOARD_IMAGE=<namespace>/slinger-admin-dashboard:0.1
+SLINGER_SERVER_IMAGE=<namespace>/slinger-server:0.2
 ```
 
 ```bash
-docker compose pull server admin-dashboard
+docker compose pull server
 docker compose up -d --no-build
 ```
 
 Pin `X.Y` (or `X.Y.Z`) rather than `latest` so an update only happens when you change the tag. Images built elsewhere work the
-same way (`docker load`, then the two variables).
+same way (`docker load`, then the variable).
 
 The Docker Hub overview pages come from `deploy/dockerhub/*.md` and are pushed by
 `.github/workflows/dockerhub-description.yml` whenever those files change on master. Their quick start needs only
 `docker-compose.yml`, `.env.example` and `deploy/Caddyfile` from a release tag, no checkout.
 
-## What the proxy routes
+## What the server answers
 
-| Path | Goes to |
+Caddy passes every request to the server unchanged; it only adds HTTPS and compression.
+
+| Path | What |
 |---|---|
-| `/v1/*` | server (desktop app API) |
-| `/device`, `/device/*` | server (desktop device-login page) |
-| `/healthz` | server (database-checking health probe) |
-| `/api/*` | server, with the `/api` prefix stripped (used by the dashboard: `VITE_API_BASE_URL=/api`) |
-| everything else | admin dashboard |
+| `/v1/*` | API (desktop app) |
+| `/api/v1/*` | the same API under the prefix the dashboard uses |
+| `/device`, `/device/*` | desktop device-login page |
+| `/healthz` | database-checking health probe |
+| `/`, `/assets/*`, other files of the build | admin dashboard (hash routes such as `/#/users`) |
 
-Desktop clients use the public base URL (e.g. `https://cloud.example.com`) and call `/v1/...`.
+Desktop clients use the public base URL (e.g. `https://cloud.example.com`) and call `/v1/...`. Anything else gets the API's JSON
+404. To run the API without the dashboard, set `SLINGER_DASHBOARD_DIR=` (empty) on the server.
 
 ## Change public ports
 
@@ -91,8 +93,23 @@ If you change the public port, include it in `SLINGER_BASE_URL` (e.g. `http://yo
 
 ```bash
 git pull && docker compose up -d --build                                          # building locally
-docker compose pull server admin-dashboard && docker compose up -d --no-build      # published images (bump the tags in .env first)
+docker compose pull server && docker compose up -d --no-build                      # published image (bump the tag in .env first)
 ```
+
+### Upgrading from v0.1.x (two images)
+
+Up to v0.1.x the dashboard was a second image and container (`slinger-admin-dashboard`, port 4173) and Caddy split the
+traffic between the two. From v0.2.0 the server image contains the dashboard:
+
+1. Take the new `docker-compose.yml`, `deploy/Caddyfile` and `deploy/Caddyfile.https` from the release (the old Caddyfiles
+   still route `/` to the removed `admin-dashboard` container).
+2. In `.env`, remove `SLINGER_ADMIN_DASHBOARD_IMAGE` and `VITE_API_BASE_URL` (no longer read) and point `SLINGER_SERVER_IMAGE`
+   at `0.2` if you use published images.
+3. `docker compose up -d --remove-orphans` (with `--build`, or after `docker compose pull server`) stops the old dashboard
+   container. The database, volumes, URLs and every other setting stay as they are; desktop apps need no change.
+
+If you run your own reverse proxy: send everything to the server. An old rule that strips `/api` still works, since the
+server accepts both `/api/v1/...` and `/v1/...`.
 
 Database data lives in the `postgres-data` volume; Caddy certificates in `caddy-data`.
 

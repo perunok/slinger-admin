@@ -3,9 +3,9 @@
 //
 //  1. PostgreSQL: a throwaway `postgres:16-alpine` container on a random free port (removed afterwards),
 //     or your own database when E2E_DATABASE_URL is set (unique test data; nothing is deleted).
-//  2. `prisma migrate deploy`, then the real Fastify server with a bootstrap super admin + platform admin.
-//  3. The real dashboard through the Vite dev server (proxying /api like Caddy does) plus a second dashboard
-//     instance configured for cross-origin CORS against the API.
+//  2. `prisma migrate deploy`, a production build of the dashboard, then the real Fastify server serving that build at "/"
+//     (as in the Docker image) with a bootstrap super admin + platform admin.
+//  3. A second dashboard through the Vite dev server, configured for cross-origin CORS against the API.
 //  4. Playwright (Chromium) drives the UI; everything is torn down again, also on Ctrl+C or failure.
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -104,10 +104,16 @@ async function main() {
   if (mig.status !== 0) throw new Error(`prisma migrate deploy failed:\n${mig.stdout}\n${mig.stderr}`);
   log('migrations applied');
 
+  // The server serves this build, like the Docker image does.
+  const build = spawnSync(bin('admin-dashboard', 'vite'), ['build'], { cwd: join(root, 'admin-dashboard'), encoding: 'utf8' });
+  if (build.status !== 0) throw new Error(`dashboard build failed:\n${build.stdout}\n${build.stderr}`);
+  log('dashboard built');
+
   // ---------------------------------------------------------------- ports / credentials
-  const [apiPort, uiPort, xoPort] = [await freePort(), await freePort(), await freePort()];
+  const [apiPort, xoPort] = [await freePort(), await freePort()];
   const api = `http://localhost:${apiPort}`;
-  const ui = `http://localhost:${uiPort}`;
+  // The bundled dashboard: same origin as the API.
+  const ui = api;
   const uiCrossOrigin = `http://localhost:${xoPort}`;
   const admin = { email: 'e2e-super@example.test', password: 'e2e-super-passphrase-1' };
   const padmin = { email: 'e2e-padmin@example.test', password: 'e2e-padmin-passphrase-1' };
@@ -126,6 +132,7 @@ async function main() {
       // Every test signs in fresh; the default 10 attempts / 5 min per IP+email would trip (covered by server tests).
       SLINGER_LOGIN_RATE_MAX: '500',
       SLINGER_SHARED_DOMAIN: 'sling.example.test',
+      SLINGER_DASHBOARD_DIR: join(root, 'admin-dashboard', 'dist'),
       SLINGER_ADMIN_BOOTSTRAP: JSON.stringify([
         { email: admin.email, password: admin.password, display_name: 'E2E Super', platform_role: 'super_admin' },
         { email: padmin.email, password: padmin.password, display_name: 'E2E Platform', platform_role: 'platform_admin' }
@@ -137,21 +144,16 @@ async function main() {
   });
   log(`server on ${api}`);
 
-  // ---------------------------------------------------------------- dashboards
-  const vite = (port, extraEnv) =>
-    start(`dashboard:${port}`, bin('admin-dashboard', 'vite'), ['--port', String(port), '--strictPort', '--host', 'localhost'], {
-      cwd: join(root, 'admin-dashboard'),
-      env: { ...process.env, SLINGER_API_PROXY: api, ...extraEnv }
-    });
-  const uiProc = vite(uiPort, {});
-  // Same dashboard, but talking to the API directly from another origin (CORS + cookies + CSRF across origins).
-  const xoProc = vite(xoPort, { VITE_API_BASE_URL: api });
-  for (const [p, url] of [[uiProc, ui], [xoProc, uiCrossOrigin]]) {
-    await waitFor(`dashboard ${url}`, () => httpOk(url), 60_000).catch((e) => {
-      throw new Error(`${e.message}\n${p.tail.join('\n')}`);
-    });
-  }
-  log(`dashboard on ${ui} (proxy) and ${uiCrossOrigin} (cross-origin)`);
+  // ---------------------------------------------------------------- cross-origin dashboard
+  // Same dashboard through the Vite dev server, talking to the API directly from another origin (CORS + cookies + CSRF).
+  const xoProc = start(`dashboard:${xoPort}`, bin('admin-dashboard', 'vite'), ['--port', String(xoPort), '--strictPort', '--host', 'localhost'], {
+    cwd: join(root, 'admin-dashboard'),
+    env: { ...process.env, VITE_API_BASE_URL: api }
+  });
+  await waitFor(`dashboard ${uiCrossOrigin}`, () => httpOk(uiCrossOrigin), 60_000).catch((e) => {
+    throw new Error(`${e.message}\n${xoProc.tail.join('\n')}`);
+  });
+  log(`dashboard on ${ui} (served by the server) and ${uiCrossOrigin} (cross-origin)`);
 
   // ---------------------------------------------------------------- playwright
   const args = ['test', ...process.argv.slice(2)];

@@ -7,27 +7,27 @@ Self-host it to share collections and environments with your team.
 Node.js 22, Fastify 5, Prisma, PostgreSQL 16. MIT licensed. Source, issues and full docs:
 [github.com/perunok/slinger-admin](https://github.com/perunok/slinger-admin).
 
-It runs together with the admin dashboard image
-[`perunm/slinger-admin-dashboard`](https://hub.docker.com/r/perunm/slinger-admin-dashboard), a PostgreSQL database and a
-reverse proxy. The Docker Compose setup below starts all four.
+The image also serves the **admin dashboard** (users, workspaces, members, invites, audit log) at `/`, from the same origin as
+the API. It needs a PostgreSQL database; for HTTPS put a reverse proxy in front. The Docker Compose setup below starts all three.
+(Up to 0.1.x the dashboard was a separate `perunm/slinger-admin-dashboard` image; see "Upgrading from 0.1.x" below.)
 
 ## Tags
 
 | Tag | Meaning |
 |---|---|
-| `X.Y.Z` (e.g. `0.1.1`) | one exact release |
-| `X.Y` (e.g. `0.1`) | newest patch release of that minor version, **recommended** |
+| `X.Y.Z` (e.g. `0.2.0`) | one exact release |
+| `X.Y` (e.g. `0.2`) | newest patch release of that minor version, **recommended** |
 | `latest` | newest release |
 
 Every tag is multi-arch: `linux/amd64` and `linux/arm64`. Pin `X.Y` or `X.Y.Z` so an update only happens when you change it.
 
 ## Quick start (Docker Compose)
 
-Needs Docker with the Compose plugin. No source checkout and no local build: you download three files and pull the images.
+Needs Docker with the Compose plugin. No source checkout and no local build: you download three files and pull the image.
 
 ```bash
 mkdir slinger-cloud && cd slinger-cloud
-V=0.1.1   # the release to run
+V=0.2.0   # the release to run
 curl -fsSLO https://raw.githubusercontent.com/perunok/slinger-admin/v$V/docker-compose.yml
 curl -fsSL  https://raw.githubusercontent.com/perunok/slinger-admin/v$V/.env.example -o .env
 mkdir deploy
@@ -44,9 +44,8 @@ SLINGER_SIGNING_SECRET=...
 # the first admin account; password at least 12 characters
 SLINGER_ADMIN_BOOTSTRAP='[{"email":"you@example.com","password":"a-long-passphrase","display_name":"Admin","platform_role":"super_admin"}]'
 
-# use the published images instead of building
-SLINGER_SERVER_IMAGE=perunm/slinger-server:0.1
-SLINGER_ADMIN_DASHBOARD_IMAGE=perunm/slinger-admin-dashboard:0.1
+# use the published image instead of building
+SLINGER_SERVER_IMAGE=perunm/slinger-server:0.2
 
 # the address people and the desktop app use; include the port if it is not 80
 SLINGER_BASE_URL=http://your-host
@@ -83,22 +82,25 @@ SLINGER_COOKIE_SECURE=true
 
 Keep `SLINGER_COOKIE_SECURE=false` with plain HTTP, otherwise browsers drop the session cookie and dashboard sign-in fails.
 
-## What the proxy routes
+## What the server answers
 
-| Path | Goes to |
+The proxy passes everything to the server unchanged.
+
+| Path | What |
 |---|---|
-| `/v1/*` | server (desktop app API) |
-| `/device`, `/device/*` | server (desktop sign-in approval page) |
-| `/healthz` | server (health probe, checks the database) |
-| `/api/*` | server, `/api` prefix stripped (used by the dashboard) |
-| everything else | admin dashboard |
+| `/` | admin dashboard |
+| `/v1/*` | API (desktop app) |
+| `/api/v1/*` | the same API under the prefix the dashboard uses |
+| `/device`, `/device/*` | desktop sign-in approval page |
+| `/healthz` | health probe (checks the database) |
 
-Only the proxy publishes ports. PostgreSQL, the server and the dashboard stay on the internal Compose network.
+Only the proxy publishes ports. PostgreSQL and the server stay on the internal Compose network.
 
 ## Running the image without Compose
 
 The container listens on port **8080**, runs as the unprivileged `node` user, applies pending database migrations on start
-(`prisma migrate deploy`) and has a built-in health check on `/healthz`. It needs a PostgreSQL 16 database:
+(`prisma migrate deploy`), serves the dashboard at `/` and has a built-in health check on `/healthz`. It needs a PostgreSQL 16
+database:
 
 ```bash
 docker run -d --name slinger-server -p 8080:8080 \
@@ -107,7 +109,7 @@ docker run -d --name slinger-server -p 8080:8080 \
   -e SLINGER_SIGNING_SECRET="$(openssl rand -hex 32)" \
   -e SLINGER_ADMIN_BOOTSTRAP='[{"email":"you@example.com","password":"a-long-passphrase","display_name":"Admin","platform_role":"super_admin"}]' \
   -e SLINGER_BASE_URL=https://cloud.example.com \
-  perunm/slinger-server:0.1
+  perunm/slinger-server:0.2
 ```
 
 Keep the signing secret stable: changing it signs everyone out.
@@ -128,6 +130,7 @@ The ones you are most likely to set:
 | `SLINGER_RATE_LIMIT_STORE` | `memory` | `postgres` when you run more than one server instance |
 | `SLINGER_SKIP_MIGRATIONS` | `0` | `1` skips migrations on start |
 | `SLINGER_LOG_LEVEL` | `info` | logs are JSON; authorization headers, cookies and secrets are never logged |
+| `SLINGER_DASHBOARD_DIR` | `/app/dashboard` | the bundled dashboard; set it empty to serve the API only |
 
 Full list with limits and token lifetimes:
 [server/README.md](https://github.com/perunok/slinger-admin/blob/master/server/README.md#configuration-environment-variables).
@@ -144,3 +147,10 @@ docker compose exec postgres sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' 
 
 Data lives in the `postgres-data` volume and TLS certificates in `caddy-data`. More in the
 [deploy manual](https://github.com/perunok/slinger-admin/blob/master/deploy-manual.md).
+
+## Upgrading from 0.1.x
+
+0.1.x ran the dashboard as a second container (`perunm/slinger-admin-dashboard`). From 0.2.0 it is part of this image:
+download the new `docker-compose.yml` and `deploy/Caddyfile` (and `Caddyfile.https`), delete `SLINGER_ADMIN_DASHBOARD_IMAGE`
+and `VITE_API_BASE_URL` from `.env`, set `SLINGER_SERVER_IMAGE=perunm/slinger-server:0.2`, then
+`docker compose pull server && docker compose up -d --no-build --remove-orphans`. Data, URLs and desktop apps are unaffected.

@@ -24,8 +24,9 @@ jobs:
         include:
           - image: slinger-server
             short: Slinger Cloud API server - self-hosted team sync for the Slinger desktop API client.
+          # Discontinued since v0.2.0 (the dashboard ships inside slinger-server); the page says where it went.
           - image: slinger-admin-dashboard
-            short: Slinger Cloud admin dashboard - web UI for users, workspaces, members and invites.
+            short: Discontinued - the admin dashboard now ships inside the slinger-server image (v0.2.0+).
     steps:
       - uses: actions/checkout@v4
       - uses: peter-evans/dockerhub-description@v4

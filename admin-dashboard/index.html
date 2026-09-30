@@ -4,13 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Slinger Admin</title>
-    <script>
-      // Apply the persisted theme before first paint to avoid a flash.
-      try {
-        var t = localStorage.getItem('slinger.theme');
-        if (t) document.documentElement.setAttribute('data-theme', t);
-      } catch (e) {}
-    </script>
+    <!-- A file, not an inline script: the server's Content-Security-Policy allows scripts from 'self' only. -->
+    <script src="/theme-init.js"></script>
     <script src="/runtime-config.js"></script>
   </head>
   <body>

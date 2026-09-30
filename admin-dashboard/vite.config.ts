@@ -15,8 +15,6 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       proxy: { '/api': { target: apiTarget, changeOrigin: false, rewrite: (p) => p.replace(/^\/api/, '') } },
     },
-    // Behind a reverse proxy the Host header is the public hostname.
-    preview: { host: '0.0.0.0', port: 4173, allowedHosts: true },
     resolve: mode === 'test' ? { conditions: ['browser'] } : undefined,
     test: {
       environment: 'jsdom',

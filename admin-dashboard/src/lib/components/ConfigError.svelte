@@ -8,9 +8,10 @@
     <p>The admin dashboard cannot tell where the Slinger API lives, so it has not attempted any requests.</p>
     <p class="banner danger">{reason}</p>
     <p class="muted">
-      Operators: set <code>VITE_API_BASE_URL</code> (for example <code>/api</code> or
-      <code>https://api.example.com</code>) on the dashboard container and restart it. The container entrypoint writes
-      it to <code>runtime-config.js</code>.
+      Operators: the Slinger server image serves the dashboard and answers <code>runtime-config.js</code> itself. If you
+      host the built files elsewhere, serve a <code>runtime-config.js</code> that sets
+      <code>window.__SLINGER_API_BASE_URL__</code> (for example <code>"/api"</code> or
+      <code>"https://api.example.com"</code>).
     </p>
   </div>
 </main>

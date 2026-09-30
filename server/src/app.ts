@@ -22,6 +22,7 @@ import { registerContentRoutes } from "./routes/content.js";
 import { registerSyncRoutes } from "./routes/sync.js";
 import { registerRealtimeRoutes } from "./routes/realtime.js";
 import { registerAdminRoutes } from "./routes/admin.js";
+import { registerDashboard, stripApiPrefix } from "./routes/dashboard.js";
 import { SESSION_COOKIE_NAME } from "./auth/middleware.js";
 import "./types.js";
 
@@ -75,7 +76,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       const v = Array.isArray(h) ? h[0] : h;
       return v && REQUEST_ID_RE.test(v) ? v : randomUUID();
     },
-    ajv: { customOptions: { removeAdditional: false } }
+    ajv: { customOptions: { removeAdditional: false } },
+    // /api/v1/... (the dashboard's prefix) is the same as /v1/...
+    rewriteUrl: (req) => stripApiPrefix(req.url ?? "/")
   });
 
   app.decorate("config", cfg);
@@ -200,6 +203,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   registerSyncRoutes(app);
   registerRealtimeRoutes(app);
   registerAdminRoutes(app);
+  if (cfg.dashboardDir) await registerDashboard(app, cfg.dashboardDir);
 
   return app;
 }

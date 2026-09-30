@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { existsSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { parseBootstrapAdmins, type BootstrapAdmin } from "./bootstrap.js";
 
@@ -39,6 +41,8 @@ export type AppConfig = {
   rateLimitStore: "memory" | "postgres";
   logLevel: string;
   bootstrapAdmins: BootstrapAdmin[];
+  /** Built admin dashboard (a directory with index.html) served at "/", or null to serve the API only. */
+  dashboardDir: string | null;
 };
 
 const PLACEHOLDER_SECRETS = new Set([
@@ -82,7 +86,8 @@ const envSchema = z.object({
   SLINGER_LOGIN_RATE_WINDOW_SECONDS: intFromEnv(1, 86_400).default(300),
   SLINGER_RATE_LIMIT_STORE: z.enum(["memory", "postgres"]).default("memory"),
   SLINGER_LOG_LEVEL: z.string().default("info"),
-  SLINGER_ADMIN_BOOTSTRAP: z.string().optional()
+  SLINGER_ADMIN_BOOTSTRAP: z.string().optional(),
+  SLINGER_DASHBOARD_DIR: z.string().optional()
 });
 
 let cachedEphemeralSecret: string | undefined;
@@ -169,6 +174,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, logger: Logger 
     }
   }
 
+  // --- bundled admin dashboard (set in the Docker image; unset = API only, e.g. `npm run dev`) ---
+  let dashboardDir: string | null = null;
+  if (e.SLINGER_DASHBOARD_DIR?.trim()) {
+    const dir = e.SLINGER_DASHBOARD_DIR.trim();
+    dashboardDir = isAbsolute(dir) ? dir : resolve(dir);
+    if (!existsSync(join(dashboardDir, "index.html"))) {
+      problems.push(`SLINGER_DASHBOARD_DIR "${dir}" has no index.html (build the dashboard with \`npm run build\` in admin-dashboard/).`);
+    }
+  }
+
   if (problems.length > 0) {
     throw new ConfigError(`Refusing to start, configuration problems:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
   }
@@ -195,6 +210,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, logger: Logger 
     loginRateLimit: { max: e.SLINGER_LOGIN_RATE_MAX, windowMs: e.SLINGER_LOGIN_RATE_WINDOW_SECONDS * 1000 },
     rateLimitStore: e.SLINGER_RATE_LIMIT_STORE,
     logLevel: e.SLINGER_LOG_LEVEL,
-    bootstrapAdmins
+    bootstrapAdmins,
+    dashboardDir
   };
 }

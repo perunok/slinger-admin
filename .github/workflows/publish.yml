@@ -1,7 +1,8 @@
 name: Publish images
 
-# Builds the server and dashboard images for linux/amd64 and linux/arm64 and pushes them to Docker Hub.
-#   Tag push vX.Y.Z  -> <namespace>/slinger-server:X.Y.Z, :X.Y, :latest (same for slinger-admin-dashboard)
+# Builds the server image (API + bundled admin dashboard) for linux/amd64 and linux/arm64 and pushes it to Docker Hub.
+#   Tag push vX.Y.Z  -> <namespace>/slinger-server:X.Y.Z, :X.Y, :latest
+# (Up to v0.1.x the dashboard was a separate slinger-admin-dashboard image; it is no longer published.)
 #   Manual run       -> :edge and :sha-<short sha>
 #
 # Repository settings (Settings > Secrets and variables > Actions):
@@ -31,11 +32,8 @@ jobs:
       matrix:
         include:
           - image: slinger-server
-            context: server
-            dockerfile: server/Dockerfile
-          - image: slinger-admin-dashboard
             context: .
-            dockerfile: admin-dashboard/Dockerfile
+            dockerfile: server/Dockerfile
     steps:
       - name: Check configuration
         env:

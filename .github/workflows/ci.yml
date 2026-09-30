@@ -140,8 +140,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      # Same build contexts as docker-compose.yml; built only, never pushed.
+      # Same build context as docker-compose.yml (the image bundles the dashboard); built only, never pushed.
       - name: Build server image
-        run: docker build -t slinger-server:ci server
-      - name: Build dashboard image
-        run: docker build -t slinger-admin-dashboard:ci -f admin-dashboard/Dockerfile .
+        run: docker build -t slinger-server:ci -f server/Dockerfile .

@@ -50,11 +50,17 @@ export function registerWorkspaceRoutes(app: FastifyInstance): void {
       const userId = req.auth!.user.id;
       const rows = await prisma.workspace.findMany({
         where: withCursor({ memberships: { some: { userId, status: "active" as const } } }, args),
-        include: { memberships: { where: { userId, status: "active" } } },
+        include: { memberships: { where: { userId, status: "active" }, include: { addedBy: { select: { id: true, displayName: true } } } } },
         orderBy: args.orderBy,
         take: args.take
       });
-      return toPage(rows, query.limit, (w) => ({ ...toWorkspace(w), role: w.memberships[0]!.role }));
+      return toPage(rows, query.limit, (w) => {
+        const m = w.memberships[0]!;
+        return {
+          ...toWorkspace(w), role: m.role, joined_at: m.joinedAt.toISOString(),
+          added_by: m.addedBy ? { id: m.addedBy.id, display_name: m.addedBy.displayName } : null
+        };
+      });
     }
   });
 

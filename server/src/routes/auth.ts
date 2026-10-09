@@ -12,6 +12,7 @@ import { ok, okSchema, toUser, userSchema } from "../lib/dto.js";
 import { burnPasswordCheck, verifyPassword } from "../auth/password.js";
 import { SESSION_COOKIE_NAME } from "../auth/middleware.js";
 import { issueTokenPair, publicUser, rotateRefreshToken, type TokenPair } from "../auth/tokens.js";
+import { claimPendingInvites } from "../services/members.js";
 
 export const emailSchema = z.string().trim().toLowerCase().email().max(254);
 const passwordInput = z.string().min(1).max(256);
@@ -124,9 +125,10 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       responses: { 200: sessionResponse },
       errors: [400, 401, 429],
       config: loginLimit,
-      handler: async ({ reply, body }) => {
+      handler: async ({ req, reply, body }) => {
         const user = await verifyLogin(body.email, body.password);
         const session = await createBrowserSession(cfg, user.id);
+        await prisma.$transaction((tx) => claimPendingInvites(tx, user, req.id, "sign_in"));
         reply.setCookie(SESSION_COOKIE_NAME, session.token, {
           httpOnly: true,
           secure: cfg.cookieSecure,
@@ -215,6 +217,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
             data: { status: "consumed" }
           });
           if (claimed.count !== 1) return null; // a concurrent poll already took it
+          await claimPendingInvites(tx, user, null, "sign_in");
           return issueTokenPair(cfg, tx, user);
         });
         if (!tokens) return { status: "expired" as const };

@@ -132,7 +132,10 @@
                 <a href={hashHref(paths.workspace(w.id))}><strong>{w.name}</strong></a>
                 <div class="muted small mono">{w.slug}</div>
               </td>
-              <td>{#if w.role}<Badge text={humanize(w.role)} />{:else}<span class="muted">—</span>{/if}</td>
+              <td>
+                {#if w.role}<Badge text={humanize(w.role)} />{:else}<span class="muted">—</span>{/if}
+                {#if w.added_by}<div class="muted small">Added by {w.added_by.display_name}</div>{/if}
+              </td>
               <td class="muted">{w.host_mode ? humanize(w.host_mode) : '—'}</td>
               <td class="muted">{formatDate(w.created_at)}</td>
               <td class="actions">

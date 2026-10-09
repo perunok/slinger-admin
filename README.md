@@ -1,6 +1,6 @@
 # Slinger Admin (Slinger Cloud)
 
-Backend and admin dashboard for Slinger Cloud: identity, workspaces, membership and invites, join requests, hosts, audit
+Backend and admin dashboard for Slinger Cloud: identity, workspaces, membership (add people by email; no tokens), join requests, hosts, audit
 logs, content and sync for the Slinger desktop app.
 
 | Part | Stack | Where |
@@ -159,7 +159,7 @@ npm run e2e       # starts everything, runs the suite, cleans up
 `E2E_DATABASE_URL`), applies the migrations, boots the real server with a bootstrap super admin and platform admin, starts two
 dashboard instances (same-origin proxy and cross-origin CORS), runs the Playwright suite in
 [`e2e/tests/`](e2e/tests/admin.spec.ts) and removes the container afterwards, even on failure or Ctrl+C. Extra arguments go to
-Playwright (`npm run e2e -- --headed`, `npm run e2e -- -g "invites"`). The suite covers login and wrong password, user creation
+Playwright (`npm run e2e -- --headed`, `npm run e2e -- -g "adding members"`). The suite covers login and wrong password, user creation
 and platform-role change, generated temporary passwords (shown once), the forced password change (temporary password -> "choose a
 new password" -> dashboard, desktop sign-in refused until then, other sessions signed out, admin reset), disabling/enabling users (existing sessions die), workspace create/settings (version conflict)/delete (typed confirmation), members and role change, one-time invite tokens and
 acceptance through the API, join-request approve/reject (workspace default role preselected), hosts, their TXT verification record and removal, the degraded health breakdown, platform and workspace audit
@@ -179,7 +179,7 @@ docker-compose.yml, .env.example, deploy-manual.md
 ## Out of scope / not built
 
 OAuth2/LDAP/SAML, a realtime/collaboration service (the API only issues signed tokens), the extension/marketplace platform,
-GraphQL/gRPC, e-mail delivery (invite tokens are returned by the API and shown once in the dashboard), Redis. See
+GraphQL/gRPC, e-mail delivery (people you add see the workspace when they sign in), Redis. See
 [`server/README.md`](server/README.md#known-limitations--not-built) for known limitations (for example the login rate limiter is per-process unless `SLINGER_RATE_LIMIT_STORE=postgres`).
 
 ## License

@@ -18,7 +18,7 @@
   // Action names the server writes (server/README.md, "Authorization matrix"); the filter is sent as `action`.
   const WORKSPACE_ACTIONS = [
     'workspace.created', 'workspace.updated', 'workspace.deleted', 'workspace.published',
-    'member.role_changed', 'member.removed',
+    'member.added', 'member.role_changed', 'member.removed',
     'invite.created', 'invite.revoked', 'invite.accepted',
     'join_request.approved', 'join_request.rejected',
     'host.added', 'host.verified', 'host.removed',

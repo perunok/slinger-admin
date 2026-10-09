@@ -11,7 +11,6 @@
   import Badge from '../lib/components/Badge.svelte';
   import WsOverview from './workspace/WsOverview.svelte';
   import WsMembers from './workspace/WsMembers.svelte';
-  import WsInvites from './workspace/WsInvites.svelte';
   import WsJoinRequests from './workspace/WsJoinRequests.svelte';
   import WsHosts from './workspace/WsHosts.svelte';
   import WsAudit from './workspace/WsAudit.svelte';
@@ -51,15 +50,14 @@
   const labels: Record<WorkspaceTab, string> = {
     overview: 'Overview',
     members: 'Members',
-    invites: 'Invites',
     'join-requests': 'Join requests',
     hosts: 'Hosts',
     audit: 'Audit log',
   };
   // The server only serves these tabs' routes to some roles (see server/README.md, authorization matrix):
-  // invites, join requests, audit log -> owner/admin; hosts -> owner; platform admins can do everything.
+  // join requests, audit log -> owner/admin; hosts -> owner; platform admins can do everything.
   const tabVisible = (t: WorkspaceTab) => {
-    if (t === 'invites' || t === 'join-requests') return canModerateMembership(session.platformRole, role);
+    if (t === 'join-requests') return canModerateMembership(session.platformRole, role);
     if (t === 'hosts') return canViewHosts(session.platformRole, role);
     if (t === 'audit') return canViewWorkspaceAudit(session.platformRole, role);
     return true;
@@ -105,8 +103,6 @@
       />
     {:else if tab === 'members'}
       <WsMembers {id} {role} />
-    {:else if tab === 'invites'}
-      <WsInvites {id} {role} />
     {:else if tab === 'join-requests'}
       <WsJoinRequests {id} {role} defaultRole={detail.workspace.default_role_for_requests} />
     {:else if tab === 'hosts'}

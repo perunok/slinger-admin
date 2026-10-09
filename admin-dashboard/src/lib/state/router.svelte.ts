@@ -1,4 +1,4 @@
-export const WORKSPACE_TABS = ['overview', 'members', 'invites', 'join-requests', 'hosts', 'audit'] as const;
+export const WORKSPACE_TABS = ['overview', 'members', 'join-requests', 'hosts', 'audit'] as const;
 export type WorkspaceTab = (typeof WORKSPACE_TABS)[number];
 
 export type Route =

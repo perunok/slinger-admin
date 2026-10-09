@@ -27,7 +27,7 @@ export function assignablePlatformRoles(p: Role): PlatformRole[] {
 /** Change an existing user's platform role: super_admin only. */
 export const canChangePlatformRole = isSuperAdmin;
 
-/** Invite members, approve/reject join requests, revoke invites. */
+/** Add members, approve/reject join requests, see and cancel additions waiting for an account. */
 export const canModerateMembership = (p: Role, w: WsRole) => isPlatformAdmin(p) || w === 'owner' || w === 'admin';
 
 /** Change a member's role, remove a member, manage hosts. */
@@ -36,19 +36,19 @@ export const canManageHosts = canManageMembers;
 /** PATCH /workspaces/{id} (name, description, visibility, default role for requests): owner or platform admin. */
 export const canEditWorkspaceSettings = canManageMembers;
 
-/** Tabs backed by owner/admin-only routes (`/hosts` needs owner, `/audit-logs` and `/invites` need admin). */
+/** Tabs backed by owner/admin-only routes (`/hosts` needs owner, `/audit-logs` needs admin). */
 export const canViewHosts = canManageMembers;
 export const canViewWorkspaceAudit = canModerateMembership;
 
 export const canDeleteWorkspace = (p: Role, w: WsRole) => isSuperAdmin(p) || w === 'owner';
 
-/** Roles that can be granted through invites / approvals / role changes ("owner" is never assignable here). */
+/** Roles that can be granted when adding members / approving / changing roles ("owner" is never assignable here). */
 export const ASSIGNABLE_WORKSPACE_ROLES: WorkspaceRole[] = ['admin', 'editor', 'viewer'];
 
 const WS_RANK: Record<WorkspaceRole, number> = { viewer: 0, editor: 1, admin: 2, owner: 3 };
 
 /**
- * Roles the caller may grant through an invite or a join-request approval: never above their own workspace role
+ * Roles the caller may grant when adding a member or approving a join request: never above their own workspace role
  * (platform admins may grant every assignable role). Mirrors `assertCanGrant` in server/src/routes/membership.ts.
  */
 export function grantableWorkspaceRoles(p: Role, w: WsRole): WorkspaceRole[] {

@@ -3,11 +3,10 @@ import type { PlatformRole, Prisma, WorkspaceRole } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../db.js";
 import { AppError } from "../lib/errors.js";
-import { newId } from "../lib/ids.js";
 import { defineRoute } from "../lib/route.js";
-import { randomToken, safeEqual, sha256Hex } from "../lib/crypto.js";
 import { pageArgs, paginationQuerySchema, toPage, withCursor } from "../lib/pagination.js";
 import { writeAuditLog } from "../lib/auditLog.js";
+import { newId } from "../lib/ids.js";
 import { assertVersionIfGiven, ensureUpdated } from "../lib/versioned.js";
 import {
   assignableRoleEnum, inviteSchema, joinRequestSchema, memberSchema, ok, okSchema, paged, toInvite,
@@ -15,28 +14,11 @@ import {
 } from "../lib/dto.js";
 import { ROLE_RANK, requireWorkspaceRole, type WorkspaceCtx } from "../auth/middleware.js";
 import { emailSchema } from "./auth.js";
+import { activateMembership } from "../services/members.js";
 
-const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const version = z.number().int().min(1);
 const idParam = z.string().min(1).max(64);
 const wsParams = z.object({ workspaceId: idParam });
-
-/** Creates the membership, or re-activates a previously removed one. An existing active membership is left untouched. */
-async function activateMembership(tx: Prisma.TransactionClient, workspaceId: string, userId: string, role: WorkspaceRole) {
-  const existing = await tx.membership.findUnique({ where: { workspaceId_userId: { workspaceId, userId } } });
-  if (!existing) {
-    return tx.membership.create({
-      data: { id: newId(), workspaceId, userId, role, status: "active" },
-      include: { user: true }
-    });
-  }
-  if (existing.status === "active") return tx.membership.findUniqueOrThrow({ where: { id: existing.id }, include: { user: true } });
-  return tx.membership.update({
-    where: { id: existing.id },
-    data: { status: "active", role, joinedAt: new Date(), version: { increment: 1 } },
-    include: { user: true }
-  });
-}
 
 /** The workspace default for approvals; only viewer/editor can be configured, anything else falls back to viewer. */
 function defaultJoinRole(r: WorkspaceRole): WorkspaceRole {
@@ -75,6 +57,66 @@ export function registerMembershipRoutes(app: FastifyInstance): void {
       });
       void req;
       return toPage(rows, query.limit, toMember);
+    }
+  });
+
+  defineRoute(app, {
+    method: "POST",
+    url: "/v1/workspaces/:workspaceId/members",
+    summary: "Add a member by email",
+    description:
+      "An existing account becomes an active member at once (`status: \"added\"`); the workspace then shows up in their " +
+      "dashboard and desktop app. An email without an account gets a pending invite (`status: \"pending\"`, no token, no " +
+      "expiry) that becomes a membership as soon as an account with that email is created or signs in. 409 when the " +
+      "email is already an active member or already has a pending invite.",
+    access: "workspace owner/admin, or platform admin",
+    tags: ["Membership"],
+    auth: "user",
+    pre: [requireWorkspaceRole("admin")],
+    params: wsParams,
+    body: z.object({ email: emailSchema, role: assignableRoleEnum }).strict(),
+    responses: {
+      201: z.discriminatedUnion("status", [
+        z.object({ status: z.literal("added"), member: memberSchema }),
+        z.object({ status: z.literal("pending"), invite: inviteSchema })
+      ])
+    },
+    errors: [400, 401, 403, 404, 409],
+    handler: async ({ req, body }) => {
+      const ws = req.workspaceCtx!.workspace;
+      const actor = req.auth!.user;
+      assertCanGrant(req.workspaceCtx!, actor.platformRole, body.role);
+      const result = await prisma.$transaction(async (tx) => {
+        const user = await tx.user.findFirst({ where: { email: { equals: body.email, mode: "insensitive" } } });
+        if (user) {
+          const existing = await tx.membership.findUnique({ where: { workspaceId_userId: { workspaceId: ws.id, userId: user.id } } });
+          if (existing?.status === "active") throw new AppError("conflict", "that user is already a member");
+          const m = await activateMembership(tx, ws.id, user.id, body.role, actor.id);
+          await writeAuditLog(tx, {
+            actorUserId: actor.id, action: "member.added", resourceType: "membership", resourceId: m.id,
+            workspaceId: ws.id, requestId: req.id, details: { email: user.email, role: m.role }
+          });
+          return { status: "added" as const, member: toMember(m) };
+        }
+        const now = new Date();
+        await tx.invite.updateMany({
+          where: { workspaceId: ws.id, status: "pending", expiresAt: { lte: now } },
+          data: { status: "expired", version: { increment: 1 } }
+        });
+        const pending = await tx.invite.findFirst({
+          where: { workspaceId: ws.id, email: { equals: body.email, mode: "insensitive" }, status: "pending" }
+        });
+        if (pending) throw new AppError("conflict", "that email is already pending; it joins when its account is created");
+        const inv = await tx.invite.create({
+          data: { id: newId(), workspaceId: ws.id, email: body.email, role: body.role, invitedByUserId: actor.id }
+        });
+        await writeAuditLog(tx, {
+          actorUserId: actor.id, action: "invite.created", resourceType: "invite", resourceId: inv.id,
+          workspaceId: ws.id, requestId: req.id, details: { email: body.email, role: body.role }
+        });
+        return { status: "pending" as const, invite: toInvite(inv) };
+      });
+      return result;
     }
   });
 
@@ -178,52 +220,6 @@ export function registerMembershipRoutes(app: FastifyInstance): void {
   });
 
   defineRoute(app, {
-    method: "POST",
-    url: "/v1/workspaces/:workspaceId/invites",
-    summary: "Invite a user by email. The raw `invite_token` is returned ONCE; only its SHA-256 hash is stored.",
-    description: "Email delivery is stubbed: deliver `invite_token` and the invite `id` to the invitee out of band. Expires after 7 days.",
-    access: "workspace owner/admin, or platform admin",
-    tags: ["Membership"],
-    auth: "user",
-    pre: [requireWorkspaceRole("admin")],
-    params: wsParams,
-    body: z.object({ email: emailSchema, role: assignableRoleEnum }).strict(),
-    responses: { 201: z.object({ invite: inviteSchema, invite_token: z.string() }) },
-    errors: [400, 401, 403, 404, 409],
-    handler: async ({ req, body }) => {
-      const ws = req.workspaceCtx!.workspace;
-      assertCanGrant(req.workspaceCtx!, req.auth!.user.platformRole, body.role);
-      const token = randomToken(32);
-      const invite = await prisma.$transaction(async (tx) => {
-        const now = new Date();
-        await tx.invite.updateMany({
-          where: { workspaceId: ws.id, status: "pending", expiresAt: { lte: now } },
-          data: { status: "expired", version: { increment: 1 } }
-        });
-        const user = await tx.user.findUnique({ where: { email: body.email } });
-        if (user) {
-          const m = await tx.membership.findUnique({ where: { workspaceId_userId: { workspaceId: ws.id, userId: user.id } } });
-          if (m?.status === "active") throw new AppError("conflict", "that user is already a member");
-        }
-        const pending = await tx.invite.findFirst({ where: { workspaceId: ws.id, email: body.email, status: "pending" } });
-        if (pending) throw new AppError("conflict", "a pending invite for that email already exists; revoke it first");
-        const inv = await tx.invite.create({
-          data: {
-            id: newId(), workspaceId: ws.id, email: body.email, role: body.role, tokenHash: sha256Hex(token),
-            invitedByUserId: req.auth!.user.id, expiresAt: new Date(now.getTime() + INVITE_TTL_MS)
-          }
-        });
-        await writeAuditLog(tx, {
-          actorUserId: req.auth!.user.id, action: "invite.created", resourceType: "invite", resourceId: inv.id,
-          workspaceId: ws.id, requestId: req.id, details: { email: body.email, role: body.role }
-        });
-        return inv;
-      });
-      return { invite: toInvite(invite), invite_token: token };
-    }
-  });
-
-  defineRoute(app, {
     method: "DELETE",
     url: "/v1/workspaces/:workspaceId/invites/:inviteId",
     summary: "Revoke a pending invite",
@@ -251,47 +247,6 @@ export function registerMembershipRoutes(app: FastifyInstance): void {
         return tx.invite.findUniqueOrThrow({ where: { id: inv.id } });
       });
       return { invite: toInvite(invite) };
-    }
-  });
-
-  defineRoute(app, {
-    method: "POST",
-    url: "/v1/invites/:inviteId/accept",
-    summary: "Accept an invite (token must match, caller's email must match the invited email)",
-    description:
-      "Every failure mode (unknown id, wrong token, other user's email, expired, already used) returns the same " +
-      "`403 invite_invalid`, so nothing about the invite can be probed.",
-    tags: ["Membership"],
-    auth: "user",
-    params: z.object({ inviteId: idParam }),
-    body: z.object({ invite_token: z.string().min(16).max(200) }).strict(),
-    responses: { 200: z.object({ workspace_id: z.string(), membership: z.object({ role: workspaceRoleEnum }) }) },
-    errors: [400, 401, 403],
-    handler: async ({ req, params, body }) => {
-      const auth = req.auth!;
-      const invalid = () => new AppError("invite_invalid", "invite is invalid, expired, or not addressed to you");
-      const invite = await prisma.invite.findUnique({ where: { id: params.inviteId } });
-      if (!invite) throw invalid();
-      // Evaluate every condition (no early exit) so timing doesn't reveal which one failed.
-      const tokenOk = safeEqual(sha256Hex(body.invite_token), invite.tokenHash);
-      const emailOk = invite.email.toLowerCase() === auth.user.email.toLowerCase();
-      const live = invite.status === "pending" && invite.expiresAt > new Date();
-      if (!(tokenOk && emailOk && live)) throw invalid();
-
-      const membership = await prisma.$transaction(async (tx) => {
-        const claimed = await tx.invite.updateMany({
-          where: { id: invite.id, status: "pending", expiresAt: { gt: new Date() } },
-          data: { status: "accepted", version: { increment: 1 } }
-        });
-        if (claimed.count !== 1) throw invalid(); // raced with another accept/revoke
-        const m = await activateMembership(tx, invite.workspaceId, auth.user.id, invite.role);
-        await writeAuditLog(tx, {
-          actorUserId: auth.user.id, action: "invite.accepted", resourceType: "invite", resourceId: invite.id,
-          workspaceId: invite.workspaceId, requestId: req.id, details: { role: m.role }
-        });
-        return m;
-      });
-      return { workspace_id: invite.workspaceId, membership: { role: membership.role } };
     }
   });
 
@@ -392,7 +347,7 @@ export function registerMembershipRoutes(app: FastifyInstance): void {
         if (claimed.count !== 1) throw new AppError("conflict", "join request was just modified");
         const role = body.role ?? defaultJoinRole(ws.defaultRoleForRequests);
         assertCanGrant(req.workspaceCtx!, req.auth!.user.platformRole, role);
-        const mem = await activateMembership(tx, ws.id, jr.requesterUserId, role);
+        const mem = await activateMembership(tx, ws.id, jr.requesterUserId, role, req.auth!.user.id);
         await writeAuditLog(tx, {
           actorUserId: req.auth!.user.id, action: "join_request.approved", resourceType: "join_request",
           resourceId: jr.id, workspaceId: ws.id, requestId: req.id,

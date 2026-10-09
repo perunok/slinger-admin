@@ -25,7 +25,13 @@ export const workspaceSchema = z.object({
   visibility: z.string(), default_role_for_requests: workspaceRoleEnum, host_mode: z.string(),
   created_at: ts, updated_at: ts, version: z.number().int()
 });
-export const workspaceListItemSchema = workspaceSchema.extend({ role: workspaceRoleEnum });
+export const workspaceListItemSchema = workspaceSchema.extend({
+  role: workspaceRoleEnum,
+  /** When the caller became a member. */
+  joined_at: ts,
+  /** Who added the caller (an owner/admin adding them or approving their join request); null for the creator. */
+  added_by: z.object({ id, display_name: z.string() }).nullable()
+});
 
 export const memberSchema = z.object({
   id, workspace_id: id, user_id: id, email: z.string(), display_name: z.string(), role: workspaceRoleEnum,
@@ -34,7 +40,9 @@ export const memberSchema = z.object({
 export const inviteSchema = z.object({
   id, workspace_id: id, email: z.string(), role: workspaceRoleEnum,
   status: z.enum(["pending", "accepted", "revoked", "expired"]),
-  invited_by_user_id: id.nullable(), expires_at: ts, created_at: ts, updated_at: ts, version: z.number().int()
+  invited_by_user_id: id.nullable(),
+  /** null: never expires (additions for an email without an account); legacy token invites expired after 7 days. */
+  expires_at: ts.nullable(), created_at: ts, updated_at: ts, version: z.number().int()
 });
 export const joinRequestSchema = z.object({
   id, workspace_id: id, requester_user_id: id, requester_email: z.string(), requester_display_name: z.string(),
@@ -97,7 +105,7 @@ export const toMember = (m: Membership & { user: Pick<User, "email" | "displayNa
 });
 export const toInvite = (i: Invite) => ({
   id: i.id, workspace_id: i.workspaceId, email: i.email, role: i.role, status: i.status,
-  invited_by_user_id: i.invitedByUserId, expires_at: iso(i.expiresAt), created_at: iso(i.createdAt),
+  invited_by_user_id: i.invitedByUserId, expires_at: i.expiresAt ? iso(i.expiresAt) : null, created_at: iso(i.createdAt),
   updated_at: iso(i.updatedAt), version: i.version
 });
 export const toJoinRequest = (j: JoinRequest & { requester: Pick<User, "email" | "displayName"> }) => ({

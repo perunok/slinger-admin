@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasErrors, slugify, validateHost, validateInvite, validateLogin, validateNewUser, validateNewWorkspace, validateWorkspaceSettings } from './validation';
+import { hasErrors, slugify, validateHost, validateMemberEmail, validateLogin, validateNewUser, validateNewWorkspace, validateWorkspaceSettings } from './validation';
 
 describe('validation', () => {
   it('login', () => {
@@ -36,8 +36,8 @@ describe('validation', () => {
     expect(slugify('Ünïcode & Co.')).toBe('unicode-co');
   });
   it('invite and host', () => {
-    expect(validateInvite({ email: '' }).email).toBeDefined();
-    expect(validateInvite({ email: 'a@b.io' })).toEqual({});
+    expect(validateMemberEmail({ email: '' }).email).toBeDefined();
+    expect(validateMemberEmail({ email: 'a@b.io' })).toEqual({});
     expect(validateHost({ host: 'https://x.com' }).host).toMatch(/without protocol/);
     expect(validateHost({ host: 'localhost' }).host).toBeDefined();
     expect(validateHost({ host: 'api.example.com' })).toEqual({});

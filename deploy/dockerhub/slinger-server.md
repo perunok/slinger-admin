@@ -1,13 +1,13 @@
 # Slinger Cloud server
 
-API server for **Slinger Cloud**: accounts, workspaces, members, invites and join requests, and sync for the
+API server for **Slinger Cloud**: accounts, workspaces, members (added by email, no tokens) and join requests, and sync for the
 [Slinger](https://github.com/perunok/slinger) desktop API client (an open-source, local-first Postman alternative).
 Self-host it to share collections and environments with your team.
 
 Node.js 22, Fastify 5, Prisma, PostgreSQL 16. MIT licensed. Source, issues and full docs:
 [github.com/perunok/slinger-admin](https://github.com/perunok/slinger-admin).
 
-The image also serves the **admin dashboard** (users, workspaces, members, invites, audit log) at `/`, from the same origin as
+The image also serves the **admin dashboard** (users, workspaces, members, audit log) at `/`, from the same origin as
 the API. It needs a PostgreSQL database; for HTTPS put a reverse proxy in front. The Docker Compose setup below starts all three.
 (Up to 0.1.x the dashboard was a separate `perunm/slinger-admin-dashboard` image; see "Upgrading from 0.1.x" below.)
 

@@ -7,7 +7,7 @@ import type { HttpClient } from './client';
 import {
   anyObjectSchema,
   auditLogSchema,
-  createInviteResponseSchema,
+  addMemberResponseSchema,
   healthSchema,
   hostSchema,
   hostWithVerificationSchema,
@@ -141,9 +141,11 @@ export function createApi(c: HttpClient) {
       removeMember: (id: string, memberId: string) =>
         c.request('DELETE', `${ws(id)}/members/${enc(memberId)}`, { schema: anyObjectSchema }),
 
-      invites: (id: string, p: ListParams) => list(`${ws(id)}/invites`, inviteSchema, { order: 'desc', cursor: p.cursor, limit: p.limit }),
-      createInvite: (id: string, input: { email: string; role: WorkspaceRole }) =>
-        c.request('POST', `${ws(id)}/invites`, { body: input, schema: createInviteResponseSchema }),
+      addMember: (id: string, input: { email: string; role: WorkspaceRole }) =>
+        c.request('POST', `${ws(id)}/members`, { body: input, schema: addMemberResponseSchema }),
+      /** Emails added before they had an account (`pending`), newest first. */
+      pendingInvites: (id: string, p: ListParams) =>
+        list(`${ws(id)}/invites`, inviteSchema, { order: 'desc', cursor: p.cursor, limit: p.limit, status: 'pending' }),
       revokeInvite: (id: string, inviteId: string) =>
         c.request('DELETE', `${ws(id)}/invites/${enc(inviteId)}`, { schema: anyObjectSchema }),
 

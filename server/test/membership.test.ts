@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { prisma } from "../src/db.js";
-import { call, createUser, makeApp, setupWorkspace, uniq } from "./helpers.js";
+import { PASSWORD, call, createUser, makeApp, setupWorkspace, uniq } from "./helpers.js";
 
 let app: FastifyInstance;
 beforeAll(async () => {
@@ -11,98 +11,115 @@ afterAll(async () => {
   await app.close();
 });
 
-describe("invites", () => {
-  async function invite(role = "editor") {
+describe("adding members", () => {
+  const add = (as: { token: string }, wsId: string, email: string, role = "editor") =>
+    call(app, { method: "POST", url: `/v1/workspaces/${wsId}/members`, as, body: { email, role } });
+  const mine = async (as: { token: string }) => (await call(app, { method: "GET", url: "/v1/workspaces", as })).json().items as any[];
+
+  it("adds an existing account at once: it is in their workspace list with who added them, no token involved", async () => {
     const owner = await createUser();
-    const invitee = await createUser("user", `${uniq("inv")}@Example.test`);
     const ws = await setupWorkspace(app, owner);
-    const res = await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/invites`, as: owner, body: { email: invitee.email, role } });
+    const member = await createUser("user", `${uniq("m")}@example.test`);
+    const res = await add(owner, ws.id, member.email.toUpperCase(), "editor");
     expect(res.statusCode).toBe(201);
-    return { owner, invitee, ws, id: res.json().invite.id as string, token: res.json().invite_token as string };
-  }
-  const accept = (as: { token: string }, id: string, invite_token: string) =>
-    call(app, { method: "POST", url: `/v1/invites/${id}/accept`, as, body: { invite_token } });
+    expect(res.json()).toMatchObject({ status: "added", member: { user_id: member.id, role: "editor", status: "active" } });
+    expect(JSON.stringify(res.json())).not.toMatch(/token/);
 
-  it("returns the raw token once and stores only its SHA-256 hash", async () => {
-    const i = await invite();
-    expect(i.token.length).toBeGreaterThanOrEqual(43); // 32 bytes base64url
-    const row = await prisma.invite.findUniqueOrThrow({ where: { id: i.id } });
-    expect(row.tokenHash).not.toBe(i.token);
-    expect(row.tokenHash).toMatch(/^[0-9a-f]{64}$/);
-    const listed = await call(app, { method: "GET", url: `/v1/workspaces/${i.ws.id}/invites`, as: i.owner });
-    expect(JSON.stringify(listed.json())).not.toContain(i.token);
-    expect(JSON.stringify(listed.json())).not.toContain(row.tokenHash);
-    expect(row.expiresAt.getTime()).toBeGreaterThan(Date.now() + 6 * 86400_000);
+    const listed = (await mine(member)).find((w) => w.id === ws.id);
+    expect(listed).toMatchObject({ role: "editor", added_by: { id: owner.id, display_name: `User ${owner.email}` } });
+    expect(Date.parse(listed.joined_at)).toBeGreaterThan(Date.now() - 60_000);
+    expect((await mine(owner)).find((w) => w.id === ws.id).added_by).toBeNull(); // the creator was not added by anyone
+    expect((await call(app, { method: "GET", url: `/v1/workspaces/${ws.id}`, as: member })).statusCode).toBe(200);
+    expect(await prisma.auditLog.count({ where: { workspaceId: ws.id, action: "member.added" } })).toBe(1);
   });
 
-  it("succeeds with the correct token and a matching email (case-insensitive), atomically creating the membership", async () => {
-    const i = await invite("editor");
-    const res = await accept(i.invitee, i.id, i.token);
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ workspace_id: i.ws.id, membership: { role: "editor" } });
-    expect((await prisma.invite.findUniqueOrThrow({ where: { id: i.id } })).status).toBe("accepted");
-    expect(await prisma.membership.count({ where: { workspaceId: i.ws.id, userId: i.invitee.id, status: "active", role: "editor" } })).toBe(1);
-    // the new member can now read the workspace
-    expect((await call(app, { method: "GET", url: `/v1/workspaces/${i.ws.id}`, as: i.invitee })).statusCode).toBe(200);
-  });
-
-  it("fails for a wrong token (403 invite_invalid) and leaves the invite usable", async () => {
-    const i = await invite();
-    const res = await accept(i.invitee, i.id, "A".repeat(43));
-    expect(res.statusCode).toBe(403);
-    expect(res.json().error.code).toBe("invite_invalid");
-    expect(await prisma.membership.count({ where: { workspaceId: i.ws.id, userId: i.invitee.id } })).toBe(0);
-    expect((await accept(i.invitee, i.id, i.token)).statusCode).toBe(200);
-  });
-
-  it("fails when the caller's email does not match the invited email, even with the right token", async () => {
-    const i = await invite();
-    const other = await createUser();
-    const res = await accept(other, i.id, i.token);
-    expect(res.statusCode).toBe(403);
-    expect(res.json().error.code).toBe("invite_invalid");
-    expect(await prisma.membership.count({ where: { workspaceId: i.ws.id, userId: other.id } })).toBe(0);
-    expect((await prisma.invite.findUniqueOrThrow({ where: { id: i.id } })).status).toBe("pending");
-  });
-
-  it("gives the same error for unknown ids, reuse, expiry and revocation", async () => {
-    const i = await invite();
-    const unknown = await accept(i.invitee, "00000000-0000-7000-8000-000000000abc", i.token);
-    expect(unknown.statusCode).toBe(403);
-    expect((await accept(i.invitee, i.id, i.token)).statusCode).toBe(200);
-    const reuse = await accept(i.invitee, i.id, i.token);
-    expect(reuse.statusCode).toBe(403);
-    expect(reuse.json().error.code).toBe("invite_invalid");
-
-    const e = await invite();
-    await prisma.invite.update({ where: { id: e.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
-    expect((await accept(e.invitee, e.id, e.token)).json().error.code).toBe("invite_invalid");
-
-    const r = await invite();
-    const rev = await call(app, { method: "DELETE", url: `/v1/workspaces/${r.ws.id}/invites/${r.id}`, as: r.owner });
-    expect(rev.statusCode).toBe(200);
-    expect(rev.json().invite.status).toBe("revoked");
-    expect((await accept(r.invitee, r.id, r.token)).json().error.code).toBe("invite_invalid");
-    expect((await call(app, { method: "DELETE", url: `/v1/workspaces/${r.ws.id}/invites/${r.id}`, as: r.owner })).statusCode).toBe(409);
-  });
-
-  it("only one of two concurrent accepts wins", async () => {
-    const i = await invite();
-    const results = await Promise.all([accept(i.invitee, i.id, i.token), accept(i.invitee, i.id, i.token)]);
-    expect(results.map((r) => r.statusCode).sort()).toEqual([200, 403]);
-    expect(await prisma.membership.count({ where: { workspaceId: i.ws.id, userId: i.invitee.id } })).toBe(1);
-  });
-
-  it("rejects invalid emails/roles and duplicate pending invites; owner role cannot be invited", async () => {
+  it("an email without an account stays pending (no token, no expiry) and joins when the admin creates the account", async () => {
     const owner = await createUser();
     const ws = await setupWorkspace(app, owner);
-    const url = `/v1/workspaces/${ws.id}/invites`;
-    expect((await call(app, { method: "POST", url, as: owner, body: { email: "not-an-email", role: "viewer" } })).statusCode).toBe(400);
-    expect((await call(app, { method: "POST", url, as: owner, body: { email: "a@b.test", role: "owner" } })).statusCode).toBe(400);
-    expect((await call(app, { method: "POST", url, as: owner, body: { email: "a@b.test", role: "superuser" } })).statusCode).toBe(400);
-    expect((await call(app, { method: "POST", url, as: owner, body: { email: "dup@b.test", role: "viewer" } })).statusCode).toBe(201);
-    expect((await call(app, { method: "POST", url, as: owner, body: { email: "DUP@b.test", role: "viewer" } })).statusCode).toBe(409);
-    expect((await call(app, { method: "POST", url, as: owner, body: { email: owner.email, role: "viewer" } })).statusCode).toBe(409); // already a member
+    const email = `${uniq("later")}@example.test`;
+    const res = await add(owner, ws.id, email, "viewer");
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({ status: "pending", invite: { email, role: "viewer", status: "pending", expires_at: null } });
+    const row = await prisma.invite.findUniqueOrThrow({ where: { id: res.json().invite.id } });
+    expect(row.tokenHash).toBeNull();
+    const pending = await call(app, { method: "GET", url: `/v1/workspaces/${ws.id}/invites?status=pending`, as: owner });
+    expect(pending.json().items.map((i: any) => i.email)).toEqual([email]);
+
+    const pa = await createUser("platform_admin");
+    const created = await call(app, { method: "POST", url: "/v1/admin/users", as: pa, body: { email, display_name: "Later" } });
+    expect(created.statusCode).toBe(201);
+    const userId = created.json().user.id;
+    expect(await prisma.membership.count({ where: { workspaceId: ws.id, userId, status: "active", role: "viewer", addedByUserId: owner.id } })).toBe(1);
+    expect((await prisma.invite.findUniqueOrThrow({ where: { id: row.id } })).status).toBe("accepted");
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { workspaceId: ws.id, action: "invite.accepted" } });
+    expect(audit).toMatchObject({ actorUserId: userId, details: { role: "viewer", via: "account_created" } });
+  });
+
+  it("signing in (dashboard or desktop) claims pending additions, including legacy token invites; not revoked or expired ones", async () => {
+    const owner = await createUser();
+    const ws1 = await setupWorkspace(app, owner);
+    const ws2 = await setupWorkspace(app, owner);
+    const ws3 = await setupWorkspace(app, owner);
+    const ws4 = await setupWorkspace(app, owner);
+    const email = `${uniq("si")}@example.test`;
+    await add(owner, ws1.id, email, "editor");
+    const revoked = (await add(owner, ws2.id, email, "editor")).json().invite;
+    await call(app, { method: "DELETE", url: `/v1/workspaces/${ws2.id}/invites/${revoked.id}`, as: owner });
+    // legacy token invites (created before this change): one live, one expired
+    const legacy = (expiresAt: Date, workspaceId: string) =>
+      prisma.invite.create({ data: { id: uniq("inv"), workspaceId, email, role: "viewer", tokenHash: "x".repeat(64), invitedByUserId: owner.id, expiresAt } });
+    await legacy(new Date(Date.now() + 86_400_000), ws3.id);
+    await legacy(new Date(Date.now() - 1000), ws4.id);
+
+    // the account appears some other way (e.g. created before the invite logic existed), then signs in to the dashboard
+    const u = await createUser("user", email);
+    const login = await call(app, { method: "POST", url: "/v1/auth/browser/login", body: { email, password: PASSWORD } });
+    expect(login.statusCode).toBe(200);
+    const ids = (await mine(u)).map((w) => w.id).sort();
+    expect(ids).toEqual([ws1.id, ws3.id].sort());
+    expect((await mine(u)).find((w) => w.id === ws3.id).added_by.id).toBe(owner.id);
+
+    // desktop device sign-in claims as well
+    const ws5 = await setupWorkspace(app, owner);
+    await prisma.invite.create({ data: { id: uniq("inv"), workspaceId: ws5.id, email, role: "editor", invitedByUserId: owner.id } });
+    const d = (await call(app, { method: "POST", url: "/v1/auth/device/start", body: { client_name: "slinger-desktop", device_name: "Box" } })).json();
+    await call(app, { method: "POST", url: "/v1/auth/device/approve", as: u, body: { user_code: d.user_code } });
+    expect((await call(app, { method: "POST", url: "/v1/auth/device/poll", body: { device_code: d.device_code } })).json().status).toBe("approved");
+    expect((await mine(u)).map((w) => w.id)).toContain(ws5.id);
+  });
+
+  it("re-adding a removed member reactivates them with the new role and adder", async () => {
+    const owner = await createUser();
+    const ws = await setupWorkspace(app, owner);
+    const m = await createUser();
+    const first = (await add(owner, ws.id, m.email, "viewer")).json().member;
+    expect((await call(app, { method: "DELETE", url: `/v1/workspaces/${ws.id}/members/${first.id}`, as: owner })).statusCode).toBe(200);
+    expect((await mine(m)).some((w) => w.id === ws.id)).toBe(false);
+    const again = await add(owner, ws.id, m.email, "editor");
+    expect(again.json()).toMatchObject({ status: "added", member: { id: first.id, role: "editor", status: "active" } });
+    expect((await mine(m)).find((w) => w.id === ws.id)).toMatchObject({ role: "editor", added_by: { id: owner.id } });
+  });
+
+  it("rejects invalid emails/roles, duplicates and existing members; owner role cannot be granted", async () => {
+    const owner = await createUser();
+    const ws = await setupWorkspace(app, owner);
+    expect((await add(owner, ws.id, "not-an-email", "viewer")).statusCode).toBe(400);
+    expect((await add(owner, ws.id, "a@b.test", "owner")).statusCode).toBe(400);
+    expect((await add(owner, ws.id, "a@b.test", "superuser")).statusCode).toBe(400);
+    const dup = `${uniq("dup")}@b.test`;
+    expect((await add(owner, ws.id, dup, "viewer")).statusCode).toBe(201);
+    expect((await add(owner, ws.id, dup.toUpperCase(), "viewer")).statusCode).toBe(409);
+    expect((await add(owner, ws.id, owner.email, "viewer")).statusCode).toBe(409); // already a member
+    const m = await createUser();
+    expect((await add(owner, ws.id, m.email)).statusCode).toBe(201);
+    expect((await add(owner, ws.id, m.email)).json().error.code).toBe("conflict");
+  });
+
+  it("the token routes are gone", async () => {
+    const owner = await createUser();
+    const ws = await setupWorkspace(app, owner);
+    expect((await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/invites`, as: owner, body: { email: "a@b.test", role: "viewer" } })).statusCode).toBe(404);
+    expect((await call(app, { method: "POST", url: "/v1/invites/whatever/accept", as: owner, body: { invite_token: "A".repeat(43) } })).statusCode).toBe(404);
   });
 });
 
@@ -132,6 +149,9 @@ describe("join requests", () => {
     const ap = await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests/${r1.id}/approve`, as: owner, body: { version: r1.version } });
     expect(ap.statusCode).toBe(200);
     expect(ap.json().membership).toMatchObject({ user_id: u1.id, role: "viewer", status: "active" });
+    // the approver is recorded as who added them (shown in the requester's workspace list)
+    const listed = (await call(app, { method: "GET", url: "/v1/workspaces", as: u1 })).json().items.find((w: any) => w.id === ws.id);
+    expect(listed.added_by).toMatchObject({ id: owner.id });
     expect((await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests/${r1.id}/approve`, as: owner, body: {} })).statusCode).toBe(409);
 
     const rej = await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/join-requests/${r2.id}/reject`, as: owner, body: {} });
@@ -227,9 +247,8 @@ describe("members", () => {
     expect((await call(app, { method: "DELETE", url: `${base}/members/${m.id}`, as: owner })).statusCode).toBe(200);
     expect((await call(app, { method: "GET", url: base, as: member })).statusCode).toBe(403); // access gone immediately
     expect((await call(app, { method: "GET", url: `${base}/members`, as: owner })).json().items).toHaveLength(1);
-    // removed members can be re-invited and come back active
-    const inv = (await call(app, { method: "POST", url: `${base}/invites`, as: owner, body: { email: member.email, role: "viewer" } })).json();
-    expect((await call(app, { method: "POST", url: `/v1/invites/${inv.invite.id}/accept`, as: member, body: { invite_token: inv.invite_token } })).statusCode).toBe(200);
+    // removed members can be added again and come back active
+    expect((await call(app, { method: "POST", url: `${base}/members`, as: owner, body: { email: member.email, role: "viewer" } })).json().status).toBe("added");
     expect((await call(app, { method: "GET", url: base, as: member })).statusCode).toBe(200);
   });
 });
@@ -240,8 +259,7 @@ describe("audit logs", () => {
     const member = await createUser();
     const ws = await setupWorkspace(app, owner);
     const base = `/v1/workspaces/${ws.id}`;
-    const inv = (await call(app, { method: "POST", url: `${base}/invites`, as: owner, body: { email: member.email, role: "viewer" } })).json();
-    await call(app, { method: "POST", url: `/v1/invites/${inv.invite.id}/accept`, as: member, body: { invite_token: inv.invite_token } });
+    await call(app, { method: "POST", url: `${base}/members`, as: owner, body: { email: member.email, role: "viewer" } });
     const m = (await call(app, { method: "GET", url: `${base}/members`, as: owner })).json().items.find((x: { user_id: string }) => x.user_id === member.id);
     await call(app, { method: "PATCH", url: `${base}/members/${m.id}`, as: owner, body: { role: "editor", version: m.version } });
     await call(app, { method: "PATCH", url: base, as: owner, body: { name: "Renamed", version: ws.version } });
@@ -252,20 +270,20 @@ describe("audit logs", () => {
     const logs = (await call(app, { method: "GET", url: `${base}/audit-logs?limit=100`, as: owner })).json();
     const actions = logs.items.map((l: { action: string }) => l.action);
     expect(actions).toEqual([
-      "workspace.created", "invite.created", "invite.accepted", "member.role_changed", "workspace.updated",
+      "workspace.created", "member.added", "member.role_changed", "workspace.updated",
       "host.added", "host.removed", "member.removed"
     ]);
     expect(logs.items[0].actor_user_id).toBe(owner.id);
     expect(logs.items[0].actor_email).toBe(owner.email);
-    expect(logs.items[7].request_id).toBe("audit-req-1");
-    expect(JSON.stringify(logs)).not.toContain(inv.invite_token);
-    expect(logs.items[3].details).toMatchObject({ from: "viewer", to: "editor", user_id: member.id });
+    expect(logs.items[6].request_id).toBe("audit-req-1");
+    expect(logs.items[1].details).toMatchObject({ email: member.email, role: "viewer" });
+    expect(logs.items[2].details).toMatchObject({ from: "viewer", to: "editor", user_id: member.id });
 
     // filterable + newest-first
     const desc = (await call(app, { method: "GET", url: `${base}/audit-logs?order=desc&limit=2`, as: owner })).json();
     expect(desc.items.map((l: { action: string }) => l.action)).toEqual(["member.removed", "host.removed"]);
     expect(desc.page.has_more).toBe(true);
-    const only = (await call(app, { method: "GET", url: `${base}/audit-logs?action=invite.created`, as: owner })).json();
+    const only = (await call(app, { method: "GET", url: `${base}/audit-logs?action=member.added`, as: owner })).json();
     expect(only.items).toHaveLength(1);
   });
 

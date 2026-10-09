@@ -9,11 +9,10 @@ const bob = person('bob');
 const carol = person('carol');
 const dave = person('dave');
 const erin = person('erin');
+const gina = person('gina');
 const wsName = `Acme ${run}`;
 const wsSlug = `acme-${run}`;
 let wsId = '';
-let inviteId = '';
-let inviteToken = '';
 let adminApi: ApiSession;
 
 test.beforeAll(async () => {
@@ -290,37 +289,25 @@ test('workspaces: create, duplicate slug is refused', async ({ page }) => {
   await dlg.getByRole('button', { name: 'Cancel' }).click();
 });
 
-test('invites: one-time token is shown once; the invitee accepts via the API; member appears; role change', async ({ page }) => {
-  await uiLogin(page, env.admin.email, env.admin.password, `/#/workspaces/${wsId}/invites`);
-  await page.getByRole('button', { name: 'Invite member' }).click();
-  const dlg = page.getByRole('dialog');
-  await dlg.getByLabel('Email').fill(bob.email);
-  await dlg.getByRole('button', { name: 'Send invite' }).click();
-  inviteToken = (await page.getByTestId('invite-token').textContent())!.trim();
-  inviteId = (await page.getByTestId('invite-id').textContent())!.trim();
-  expect(inviteToken.length).toBeGreaterThanOrEqual(32);
-  await page.getByRole('button', { name: 'Done' }).click();
-  await expect(page.getByRole('row', { name: new RegExp(`${bob.email}.*Pending`) })).toBeVisible();
-  // the token is not retrievable afterwards
-  await page.reload();
-  await expect(page.getByText(inviteToken)).toHaveCount(0);
+test('adding members: an existing account joins at once and sees it; an email without an account joins when created; role change', async ({ page }) => {
+  await uiLogin(page, env.admin.email, env.admin.password, `/#/workspaces/${wsId}/members`);
+  const add = async (email: string) => {
+    await page.getByRole('button', { name: 'Add member' }).click();
+    const dlg = page.getByRole('dialog');
+    await dlg.getByLabel('Email').fill(email);
+    await dlg.getByRole('button', { name: 'Add member' }).click();
+    await expect(dlg).toHaveCount(0);
+  };
 
-  // wrong user cannot accept; the invited user can (once)
-  const aliceApi = await apiLogin(alice.email, alice.password);
-  const wrong = await apiCall(aliceApi, 'POST', `/invites/${inviteId}/accept`, { invite_token: inviteToken });
-  expect(wrong.status()).toBe(403);
-  expect((await wrong.json()).error.code).toBe('invite_invalid');
-  const bobApi = await apiLogin(bob.email, bob.password);
-  const ok = await apiCall(bobApi, 'POST', `/invites/${inviteId}/accept`, { invite_token: inviteToken });
-  expect(ok.status()).toBe(200);
-  expect(await ok.json()).toMatchObject({ workspace_id: wsId, membership: { role: 'viewer' } });
-  expect((await apiCall(bobApi, 'POST', `/invites/${inviteId}/accept`, { invite_token: inviteToken })).status()).toBe(403);
-
-  await page.reload();
-  await expect(page.getByRole('row', { name: new RegExp(`${bob.email}.*Accepted`) })).toBeVisible();
-
-  await page.getByRole('link', { name: 'Members' }).click();
+  // bob has an account: he is a member right away, no token anywhere
+  await add(bob.email);
+  await expect(toast(page, `Added ${bob.email}. The workspace now shows in their dashboard and in Slinger.`)).toBeVisible();
   await expect(page.getByRole('row', { name: new RegExp(bob.email) })).toBeVisible();
+  await expect(page.getByText(/token/i)).toHaveCount(0);
+  const bobApi = await apiLogin(bob.email, bob.password);
+  const bobList = await (await bobApi.ctx.get('/v1/workspaces')).json();
+  expect(bobList.items.find((w: { id: string }) => w.id === wsId)).toMatchObject({ role: 'viewer', added_by: { display_name: 'E2E Super' } });
+
   await page.getByLabel(`Role for ${bob.display_name}`).selectOption('editor');
   await expect(toast(page, `${bob.display_name} is now Editor`)).toBeVisible();
   await page.reload();
@@ -328,15 +315,24 @@ test('invites: one-time token is shown once; the invitee accepts via the API; me
   // owner row is locked
   await expect(page.getByLabel(`Role for E2E Super`)).toHaveCount(0);
 
-  // revoke a second invite from the UI
-  await page.getByRole('link', { name: 'Invites' }).click();
-  await page.getByRole('button', { name: 'Invite member' }).click();
-  await page.getByRole('dialog').getByLabel('Email').fill(dave.email);
-  await page.getByRole('dialog').getByRole('button', { name: 'Send invite' }).click();
-  await page.getByRole('button', { name: 'Done' }).click();
-  await page.getByRole('button', { name: `Revoke invite for ${dave.email}` }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Revoke invite' }).click();
-  await expect(page.getByRole('row', { name: new RegExp(`${dave.email}.*Revoked`) })).toBeVisible();
+  // gina has no account yet: he waits, and joins as soon as an admin creates his account
+  await add(gina.email);
+  const waiting = page.locator('section', { has: page.getByRole('heading', { name: 'Waiting for an account' }) });
+  await expect(waiting.getByRole('row', { name: new RegExp(gina.email) })).toBeVisible();
+  const created = await apiCall(adminApi, 'POST', '/admin/users', { email: gina.email, display_name: gina.display_name, password: gina.password });
+  expect(created.status()).toBe(201);
+  const ginaApi = await apiLogin(gina.email, gina.password);
+  const ginaList = await (await ginaApi.ctx.get('/v1/workspaces')).json();
+  expect(ginaList.items.map((w: { id: string }) => w.id)).toContain(wsId);
+  await page.reload();
+  await expect(page.getByRole('row', { name: new RegExp(gina.email) })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Waiting for an account' })).toHaveCount(0);
+
+  // a pending addition can be taken back (dave asks to join later instead)
+  await add(dave.email);
+  await page.getByRole('button', { name: `Remove ${dave.email}` }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Remove' }).click();
+  await expect(page.getByRole('heading', { name: 'Waiting for an account' })).toHaveCount(0);
 });
 
 test('join requests: approve one (with role), reject another', async ({ page }) => {
@@ -446,7 +442,7 @@ test('audit logs: platform and workspace views, newest first, actor emails, acti
   await expect(page.getByText(/"to":"editor"/).first()).toBeVisible();
 
   await page.goto(`/#/workspaces/${wsId}/audit`);
-  await page.getByLabel('Action').selectOption('invite.accepted');
+  await page.getByLabel('Action').selectOption('member.added');
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText(bob.email);
 });
@@ -483,13 +479,13 @@ test('session expiry: a dead session sends the user to login and back to the pag
   await uiLogin(page, env.admin.email, env.admin.password, `/#/workspaces/${wsId}/members`);
   await expect(page.getByRole('row', { name: new RegExp(bob.email) })).toBeVisible();
   await context.clearCookies(); // what an expired/revoked cookie looks like to the browser
-  await page.getByRole('link', { name: 'Invites' }).click();
+  await page.getByRole('link', { name: 'Join requests' }).click();
   await expect(page.getByText('Your session has expired. Please sign in again.')).toBeVisible();
   await page.getByLabel('Email').fill(env.admin.email);
   await page.getByLabel('Password').fill(env.admin.password);
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page).toHaveURL(new RegExp(`#/workspaces/${wsId}/invites$`));
-  await expect(page.getByRole('button', { name: 'Invite member' })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`#/workspaces/${wsId}/join-requests$`));
+  await expect(page.getByLabel('Show')).toBeVisible();
 });
 
 test('workspace settings: owner edits with version handling; a concurrent change shows the conflict; editors cannot', async ({ page }) => {

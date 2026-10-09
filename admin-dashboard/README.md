@@ -69,8 +69,8 @@ Design notes:
 - **Themes**: `data-theme` on `<html>` (`system`, `light`, `dark`, `midnight`, `contrast`), persisted in
   `localStorage`, applied before first paint from `index.html`. Components use CSS variables only; tokens are defined
   in `src/app.css`.
-- **Destructive / sensitive actions**: removing a host, disabling/enabling a user, deleting a workspace or member and revoking an
-  invite go through `ConfirmDialog` (server errors stay in the dialog). A generated temporary password is held only in the open
+- **Destructive / sensitive actions**: removing a host, disabling/enabling a user, deleting a workspace or member and cancelling a
+  pending addition go through `ConfirmDialog` (server errors stay in the dialog). A generated temporary password is held only in the open
   dialog state and its copy button keeps the value out of the accessible name.
 - **Passwords**: the user menu (name in the top bar) opens `#/account` with the change-password form (current, new, confirm; the
   server's rules are listed; wrong current password, policy violations and rate limiting are shown on the form). After a change the

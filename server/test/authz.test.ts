@@ -28,7 +28,7 @@ describe("workspace Owner (not a platform admin)", () => {
     const owner = await createUser();
     const ws = await setupWorkspace(app, owner);
 
-    const invite = await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/invites`, as: owner, body: { email: "someone@example.test", role: "editor" } });
+    const invite = await call(app, { method: "POST", url: `/v1/workspaces/${ws.id}/members`, as: owner, body: { email: "someone@example.test", role: "editor" } });
     expect(invite.statusCode).toBe(201);
 
     const requester = await createUser();
@@ -83,7 +83,7 @@ describe("authorization matrix", () => {
       ["PUT", `${base}/environments/${c.env.id}/variables/NEW_KEY`, { value: "v" }],
       ["DELETE", `${base}/environments/${c.env.id}/variables/API_KEY`, undefined],
       ["POST", `${base}/sync/push`, { client_id: client, operations: [{ operation_id: "op1", resource_type: "collection", resource_id: "00000000-0000-7000-8000-000000000001", op: "upsert", payload: { name: "sneaky" } }] }],
-      ["POST", `${base}/invites`, { email: "a@b.test", role: "viewer" }],
+      ["POST", `${base}/members`, { email: "a@b.test", role: "viewer" }],
       ["PATCH", `${base}`, { name: "x", version: 1 }],
       ["DELETE", `${base}`, undefined],
       ["POST", `${base}/hosts`, { host: "a.b.test", kind: "custom_domain" }]
@@ -104,7 +104,7 @@ describe("authorization matrix", () => {
     const base = `/v1/workspaces/${ws.id}`;
     expect((await call(app, { method: "POST", url: `${base}/collections`, as: editor, body: { name: "ok" } })).statusCode).toBe(201);
     for (const [method, url, body] of [
-      ["POST", `${base}/invites`, { email: "a@b.test", role: "viewer" }],
+      ["POST", `${base}/members`, { email: "a@b.test", role: "viewer" }],
       ["GET", `${base}/invites`, undefined],
       ["GET", `${base}/join-requests`, undefined],
       ["GET", `${base}/audit-logs`, undefined],
@@ -121,7 +121,7 @@ describe("authorization matrix", () => {
     const viewer = await createUser();
     const ws = await setupWorkspace(app, owner, [{ user: admin, role: "admin" }, { user: viewer, role: "viewer" }]);
     const base = `/v1/workspaces/${ws.id}`;
-    expect((await call(app, { method: "POST", url: `${base}/invites`, as: admin, body: { email: `${uniq()}@x.test`, role: "viewer" } })).statusCode).toBe(201);
+    expect((await call(app, { method: "POST", url: `${base}/members`, as: admin, body: { email: `${uniq()}@x.test`, role: "viewer" } })).statusCode).toBe(201);
 
     const viewerMember = (await call(app, { method: "GET", url: `${base}/members`, as: admin })).json().items.find((m: { user_id: string }) => m.user_id === viewer.id);
     const patch = await call(app, { method: "PATCH", url: `${base}/members/${viewerMember.id}`, as: admin, body: { role: "admin", version: viewerMember.version } });
@@ -153,7 +153,7 @@ describe("authorization matrix", () => {
     const base = `/v1/workspaces/${ws.id}`;
     expect((await call(app, { method: "GET", url: base, as: pa })).json().membership).toBeNull();
     expect((await call(app, { method: "POST", url: `${base}/collections`, as: pa, body: { name: "by admin" } })).statusCode).toBe(201);
-    expect((await call(app, { method: "POST", url: `${base}/invites`, as: pa, body: { email: `${uniq()}@x.test`, role: "viewer" } })).statusCode).toBe(201);
+    expect((await call(app, { method: "POST", url: `${base}/members`, as: pa, body: { email: `${uniq()}@x.test`, role: "viewer" } })).statusCode).toBe(201);
     expect((await call(app, { method: "GET", url: `${base}/hosts`, as: pa })).statusCode).toBe(200);
     expect((await call(app, { method: "DELETE", url: base, as: pa })).statusCode).toBe(403);
     expect((await call(app, { method: "DELETE", url: `/v1/admin/workspaces/${ws.id}`, as: pa })).statusCode).toBe(403);

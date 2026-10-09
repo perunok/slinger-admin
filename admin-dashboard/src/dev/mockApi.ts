@@ -18,8 +18,8 @@ import type { HttpClient } from '../lib/api/client';
 type Json = Record<string, unknown>;
 interface U { disabled?: boolean; must_change_password?: boolean; id: string; email: string; display_name: string; platform_role: 'super_admin' | 'platform_admin' | 'user'; password: string; created_at: string; updated_at: string }
 interface W { id: string; slug: string; name: string; description: string; owner_user_id: string; visibility: string; host_mode: string; created_at: string; updated_at: string; version: number }
-interface M { id: string; workspace_id: string; user_id: string; role: string; status: string; joined_at: string; created_at: string; updated_at: string; version: number }
-interface I { id: string; workspace_id: string; email: string; role: string; status: string; expires_at: string; created_at: string; updated_at: string; version: number }
+interface M { id: string; workspace_id: string; user_id: string; role: string; status: string; added_by_user_id?: string | null; joined_at: string; created_at: string; updated_at: string; version: number }
+interface I { id: string; workspace_id: string; email: string; role: string; status: string; invited_by_user_id?: string | null; expires_at: string | null; created_at: string; updated_at: string; version: number }
 interface J { id: string; workspace_id: string; requester_user_id: string; message: string; status: string; requested_role: string; created_at: string; updated_at: string; version: number }
 interface H { id: string; workspace_id: string; host: string; kind: string; status: string; tls_status: string; created_at: string; updated_at: string; version: number; token: string; checks: number }
 interface A { id: string; workspace_id: string | null; actor_user_id: string; actor_email: string; action: string; resource_type: string; resource_id: string; request_id: string; details: Json; created_at: string }
@@ -56,7 +56,7 @@ function seed(): Db {
   }
   const members: M[] = [];
   const addMember = (w: W, u: U, role: string) =>
-    members.push({ id: uid(), workspace_id: w.id, user_id: u.id, role, status: 'active', joined_at: iso(30000), created_at: iso(30000), updated_at: iso(30000), version: 1 });
+    members.push({ id: uid(), workspace_id: w.id, user_id: u.id, role, status: 'active', added_by_user_id: role === 'owner' ? null : w.owner_user_id, joined_at: iso(30000), created_at: iso(30000), updated_at: iso(30000), version: 1 });
   const acme = workspaces[0]!;
   addMember(acme, owner, 'owner');
   addMember(acme, editor, 'editor');
@@ -64,8 +64,9 @@ function seed(): Db {
   workspaces.slice(1).forEach((w) => addMember(w, sup, 'owner'));
 
   const invites: I[] = [];
-  for (let n = 1; n <= 24; n++) {
-    invites.push({ id: uid(), workspace_id: acme.id, email: `invitee${n}@example.com`, role: (['viewer', 'editor', 'admin'] as const)[n % 3]!, status: n % 7 === 0 ? 'accepted' : 'pending', expires_at: iso(-10000), created_at: iso(2000 - n * 10), updated_at: iso(2000 - n * 10), version: 1 });
+  // People added before they had an account; they join when the account is created.
+  for (let n = 1; n <= 3; n++) {
+    invites.push({ id: uid(), workspace_id: acme.id, email: `newhire${n}@example.com`, role: (['viewer', 'editor', 'admin'] as const)[n % 3]!, status: 'pending', invited_by_user_id: acme.owner_user_id, expires_at: null, created_at: iso(2000 - n * 10), updated_at: iso(2000 - n * 10), version: 1 });
   }
   const joins: J[] = [];
   for (let n = 0; n < 23; n++) {
@@ -75,7 +76,7 @@ function seed(): Db {
     { id: uid(), workspace_id: acme.id, host: 'acme.sling.example.com', kind: 'dedicated_subdomain', status: 'active', tls_status: 'ready', created_at: iso(9000), updated_at: iso(9000), version: 1, token: 'x', checks: 9 },
     { id: uid(), workspace_id: acme.id, host: 'api.acme-corp.com', kind: 'custom_domain', status: 'pending_verification', tls_status: 'pending', created_at: iso(500), updated_at: iso(500), version: 1, token: 'verify-0197acme', checks: 0 },
   ];
-  const actions = ['invite.created', 'member.role_changed', 'member.removed', 'host.added', 'workspace.updated', 'join_request.approved'];
+  const actions = ['member.added', 'member.role_changed', 'member.removed', 'host.added', 'workspace.updated', 'join_request.approved'];
   const audit: A[] = [];
   for (let n = 0; n < 47; n++) {
     const wsId = n % 3 === 0 ? acme.id : workspaces[1 + (n % 5)]!.id;
@@ -238,7 +239,11 @@ export function installMockApi(client: HttpClient) {
     // ---- workspaces ----
     if (method === 'GET' && path === '/workspaces') {
       const q = (params.get('q') ?? '').toLowerCase();
-      const mine = db.workspaces.filter((w) => roleOf(w.id, u) && (!q || w.name.toLowerCase().includes(q))).map((w) => ({ ...w, role: roleOf(w.id, u) }));
+      const mine = db.workspaces.filter((w) => roleOf(w.id, u) && (!q || w.name.toLowerCase().includes(q))).map((w) => {
+        const m = db.members.find((x) => x.workspace_id === w.id && x.user_id === u.id)!;
+        const by = m.added_by_user_id ? db.users.find((x) => x.id === m.added_by_user_id) : undefined;
+        return { ...w, role: roleOf(w.id, u), joined_at: m.joined_at, added_by: by ? { id: by.id, display_name: by.display_name } : null };
+      });
       return { status: 200, json: paginate(mine, params) };
     }
     if (method === 'POST' && path === '/workspaces') {
@@ -271,6 +276,23 @@ export function installMockApi(client: HttpClient) {
         audit(wid, 'workspace.updated', 'workspace', wid, { fields: Object.keys(body).filter((k) => k !== 'version') });
         return { status: 200, json: { workspace: w } };
       }
+      if (rest === 'members' && method === 'POST') {
+        if (!canModerate(u, role)) throw new HttpError(403, 'forbidden', 'Not allowed to add members.');
+        const email = String(body.email).trim().toLowerCase();
+        const target = db.users.find((x) => x.email.toLowerCase() === email);
+        if (target) {
+          if (db.members.some((m) => m.workspace_id === wid && m.user_id === target.id)) throw new HttpError(409, 'conflict', 'that user is already a member');
+          const m: M = { id: uid(), workspace_id: wid, user_id: target.id, role: String(body.role), status: 'active', added_by_user_id: u.id, joined_at: now(), created_at: now(), updated_at: now(), version: 1 };
+          db.members.unshift(m);
+          audit(wid, 'member.added', 'membership', m.id, { email, role: m.role });
+          return { status: 201, json: { status: 'added', member: { ...m, email: target.email, display_name: target.display_name } } };
+        }
+        if (db.invites.some((i) => i.workspace_id === wid && i.status === 'pending' && i.email.toLowerCase() === email)) throw new HttpError(409, 'conflict', 'that email is already pending; it joins when its account is created');
+        const inv: I = { id: uid(), workspace_id: wid, email, role: String(body.role), status: 'pending', invited_by_user_id: u.id, expires_at: null, created_at: now(), updated_at: now(), version: 1 };
+        db.invites.unshift(inv);
+        audit(wid, 'invite.created', 'invite', inv.id, { email, role: inv.role });
+        return { status: 201, json: { status: 'pending', invite: inv } };
+      }
       if (rest === 'members' && method === 'GET') {
         const items = db.members.filter((m) => m.workspace_id === wid).map((m) => { const mu = db.users.find((x) => x.id === m.user_id)!; return { ...m, email: mu.email, display_name: mu.display_name }; });
         return { status: 200, json: paginate(items, params) };
@@ -294,16 +316,10 @@ export function installMockApi(client: HttpClient) {
           return { status: 200, json: { ok: true } };
         }
       }
-      if (rest === 'invites') {
-        if (!canModerate(u, role)) throw new HttpError(403, 'forbidden', 'Not allowed to manage invites.');
-        if (method === 'GET') return { status: 200, json: paginate(db.invites.filter((i) => i.workspace_id === wid), params) };
-        if (method === 'POST') {
-          const inv: I = { id: uid(), workspace_id: wid, email: String(body.email), role: String(body.role), status: 'pending', expires_at: new Date(Date.now() + 7 * 864e5).toISOString(), created_at: now(), updated_at: now(), version: 1 };
-          db.invites.unshift(inv);
-          audit(wid, 'invite.created', 'invite', inv.id, { email: inv.email, role: inv.role });
-          const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, '0')).join('');
-          return { status: 201, json: { invite: inv, invite_token: token } };
-        }
+      if (rest === 'invites' && method === 'GET') {
+        if (!canModerate(u, role)) throw new HttpError(403, 'forbidden', 'Not allowed to see pending members.');
+        const st = params.get('status');
+        return { status: 200, json: paginate(db.invites.filter((i) => i.workspace_id === wid && (!st || i.status === st)), params) };
       }
       const im = rest.match(/^invites\/([^/]+)$/);
       if (im && method === 'DELETE') {

@@ -898,6 +898,21 @@ paths:
                             - admin
                             - editor
                             - viewer
+                        joined_at:
+                          type: string
+                          format: date-time
+                        added_by:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            display_name:
+                              type: string
+                          required:
+                            - id
+                            - display_name
+                          additionalProperties: false
+                          nullable: true
                       required:
                         - id
                         - slug
@@ -911,6 +926,8 @@ paths:
                         - updated_at
                         - version
                         - role
+                        - joined_at
+                        - added_by
                       additionalProperties: false
                   page:
                     type: object
@@ -1782,6 +1799,205 @@ paths:
               - desc
             default: asc
       x-access: any active member, or platform admin
+    post:
+      operationId: postV1WorkspacesWorkspaceIdMembers
+      summary: Add a member by email
+      tags:
+        - Membership
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+          csrfToken: []
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - type: object
+                    properties:
+                      status:
+                        type: string
+                        enum:
+                          - added
+                      member:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          workspace_id:
+                            type: string
+                          user_id:
+                            type: string
+                          email:
+                            type: string
+                          display_name:
+                            type: string
+                          role:
+                            type: string
+                            enum:
+                              - owner
+                              - admin
+                              - editor
+                              - viewer
+                          status:
+                            type: string
+                            enum:
+                              - active
+                              - removed
+                          joined_at:
+                            type: string
+                            format: date-time
+                          created_at:
+                            type: string
+                            format: date-time
+                          updated_at:
+                            type: string
+                            format: date-time
+                          version:
+                            type: integer
+                        required:
+                          - id
+                          - workspace_id
+                          - user_id
+                          - email
+                          - display_name
+                          - role
+                          - status
+                          - joined_at
+                          - created_at
+                          - updated_at
+                          - version
+                        additionalProperties: false
+                    required:
+                      - status
+                      - member
+                    additionalProperties: false
+                  - type: object
+                    properties:
+                      status:
+                        type: string
+                        enum:
+                          - pending
+                      invite:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          workspace_id:
+                            type: string
+                          email:
+                            type: string
+                          role:
+                            type: string
+                            enum:
+                              - owner
+                              - admin
+                              - editor
+                              - viewer
+                          status:
+                            type: string
+                            enum:
+                              - pending
+                              - accepted
+                              - revoked
+                              - expired
+                          invited_by_user_id:
+                            type: string
+                            nullable: true
+                          expires_at:
+                            type: string
+                            format: date-time
+                            nullable: true
+                          created_at:
+                            type: string
+                            format: date-time
+                          updated_at:
+                            type: string
+                            format: date-time
+                          version:
+                            type: integer
+                        required:
+                          - id
+                          - workspace_id
+                          - email
+                          - role
+                          - status
+                          - invited_by_user_id
+                          - expires_at
+                          - created_at
+                          - updated_at
+                          - version
+                        additionalProperties: false
+                    required:
+                      - status
+                      - invite
+                    additionalProperties: false
+        "400":
+          description: Invalid request (zod validation failed, malformed JSON, bad cursor)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Conflict / version_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      description: |-
+        An existing account becomes an active member at once (`status: "added"`); the workspace then shows up in their dashboard and desktop app. An email without an account gets a pending invite (`status: "pending"`, no token, no expiry) that becomes a membership as soon as an account with that email is created or signs in. 409 when the email is already an active member or already has a pending invite.
+
+        **Access:** workspace owner/admin, or platform admin.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                  maxLength: 254
+                role:
+                  type: string
+                  enum:
+                    - admin
+                    - editor
+                    - viewer
+              required:
+                - email
+                - role
+              additionalProperties: false
+      x-access: workspace owner/admin, or platform admin
   /v1/workspaces/{workspaceId}/members/{memberId}:
     patch:
       operationId: patchV1WorkspacesWorkspaceIdMembersMemberId
@@ -2039,6 +2255,7 @@ paths:
                         expires_at:
                           type: string
                           format: date-time
+                          nullable: true
                         created_at:
                           type: string
                           format: date-time
@@ -2143,142 +2360,6 @@ paths:
               - revoked
               - expired
       x-access: workspace owner/admin, or platform admin
-    post:
-      operationId: postV1WorkspacesWorkspaceIdInvites
-      summary: Invite a user by email. The raw `invite_token` is returned ONCE; only its SHA-256 hash is stored.
-      tags:
-        - Membership
-      security:
-        - bearerAuth: []
-        - cookieAuth: []
-          csrfToken: []
-      responses:
-        "201":
-          description: Created
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  invite:
-                    type: object
-                    properties:
-                      id:
-                        type: string
-                      workspace_id:
-                        type: string
-                      email:
-                        type: string
-                      role:
-                        type: string
-                        enum:
-                          - owner
-                          - admin
-                          - editor
-                          - viewer
-                      status:
-                        type: string
-                        enum:
-                          - pending
-                          - accepted
-                          - revoked
-                          - expired
-                      invited_by_user_id:
-                        type: string
-                        nullable: true
-                      expires_at:
-                        type: string
-                        format: date-time
-                      created_at:
-                        type: string
-                        format: date-time
-                      updated_at:
-                        type: string
-                        format: date-time
-                      version:
-                        type: integer
-                    required:
-                      - id
-                      - workspace_id
-                      - email
-                      - role
-                      - status
-                      - invited_by_user_id
-                      - expires_at
-                      - created_at
-                      - updated_at
-                      - version
-                    additionalProperties: false
-                  invite_token:
-                    type: string
-                required:
-                  - invite
-                  - invite_token
-                additionalProperties: false
-        "400":
-          description: Invalid request (zod validation failed, malformed JSON, bad cursor)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "401":
-          description: Unauthenticated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "403":
-          description: Forbidden
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "409":
-          description: Conflict / version_mismatch
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-      description: |-
-        Email delivery is stubbed: deliver `invite_token` and the invite `id` to the invitee out of band. Expires after 7 days.
-
-        **Access:** workspace owner/admin, or platform admin.
-      parameters:
-        - name: workspaceId
-          in: path
-          required: true
-          schema:
-            type: string
-            minLength: 1
-            maxLength: 64
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                email:
-                  type: string
-                  format: email
-                  maxLength: 254
-                role:
-                  type: string
-                  enum:
-                    - admin
-                    - editor
-                    - viewer
-              required:
-                - email
-                - role
-              additionalProperties: false
-      x-access: workspace owner/admin, or platform admin
   /v1/workspaces/{workspaceId}/invites/{inviteId}:
     delete:
       operationId: deleteV1WorkspacesWorkspaceIdInvitesInviteId
@@ -2326,6 +2407,7 @@ paths:
                       expires_at:
                         type: string
                         format: date-time
+                        nullable: true
                       created_at:
                         type: string
                         format: date-time
@@ -2390,84 +2472,6 @@ paths:
             minLength: 1
             maxLength: 64
       x-access: workspace owner/admin, or platform admin
-  /v1/invites/{inviteId}/accept:
-    post:
-      operationId: postV1InvitesInviteIdAccept
-      summary: Accept an invite (token must match, caller's email must match the invited email)
-      tags:
-        - Membership
-      security:
-        - bearerAuth: []
-        - cookieAuth: []
-          csrfToken: []
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  workspace_id:
-                    type: string
-                  membership:
-                    type: object
-                    properties:
-                      role:
-                        type: string
-                        enum:
-                          - owner
-                          - admin
-                          - editor
-                          - viewer
-                    required:
-                      - role
-                    additionalProperties: false
-                required:
-                  - workspace_id
-                  - membership
-                additionalProperties: false
-        "400":
-          description: Invalid request (zod validation failed, malformed JSON, bad cursor)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "401":
-          description: Unauthenticated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "403":
-          description: Forbidden
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-      description: Every failure mode (unknown id, wrong token, other user's email, expired, already used) returns the same `403 invite_invalid`, so nothing about the invite can be probed.
-      parameters:
-        - name: inviteId
-          in: path
-          required: true
-          schema:
-            type: string
-            minLength: 1
-            maxLength: 64
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                invite_token:
-                  type: string
-                  minLength: 16
-                  maxLength: 200
-              required:
-                - invite_token
-              additionalProperties: false
   /v1/workspaces/{workspaceId}/join-requests:
     post:
       operationId: postV1WorkspacesWorkspaceIdJoinRequests

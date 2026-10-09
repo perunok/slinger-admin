@@ -61,8 +61,8 @@ Compute `platformRole` (from the JWT) and `workspaceRole` (from the caller's mem
 |---|---|
 | Read workspace content (collections/folders/requests/environments/variables), sync pull | `platformRole ∈ {super_admin, platform_admin}` OR any active workspace membership (owner/admin/editor/viewer) |
 | Write workspace content (create/update/delete collections/folders/requests/environments/variables), sync push | `platformRole ∈ {super_admin, platform_admin}` OR `workspaceRole ∈ {owner, admin, editor}` |
-| Invite members, approve/reject join requests, revoke invites | `platformRole ∈ {super_admin, platform_admin}` OR `workspaceRole ∈ {owner, admin}`; a member never grants a role above their own. Approving without a `role` grants the workspace's `default_role_for_requests` (`viewer`/`editor`); the requester's `requested_role` is only a hint |
-| Change a member's role, remove a member, manage hosts | `platformRole ∈ {super_admin, platform_admin}` OR `workspaceRole = owner` (admins can invite/approve but not reassign roles or remove people, per README's role table) |
+| Add members, approve/reject join requests, cancel pending additions | `platformRole ∈ {super_admin, platform_admin}` OR `workspaceRole ∈ {owner, admin}`; a member never grants a role above their own. Approving without a `role` grants the workspace's `default_role_for_requests` (`viewer`/`editor`); the requester's `requested_role` is only a hint |
+| Change a member's role, remove a member, manage hosts | `platformRole ∈ {super_admin, platform_admin}` OR `workspaceRole = owner` (admins can add/approve but not reassign roles or remove people, per README's role table) |
 | Delete workspace | `platformRole = super_admin` OR `workspaceRole = owner` |
 | `/v1/admin/*` platform routes | `platformRole ∈ {super_admin, platform_admin}` only; user-role-mutation endpoints (`POST /v1/admin/users` with `platform_role`, promoting to platform_admin) require `platformRole = super_admin` |
 
@@ -70,10 +70,22 @@ Implement this as one shared Fastify `preHandler` (e.g. `requireWorkspaceRole(mi
 
 **Every** workspace-content resource fetch/update/delete (collection, folder, request, environment, variable, membership) MUST filter by the `workspace_id` path param at the database layer (a WHERE clause or a Prisma nested-relation query), never by bare resource ID alone. This fixes systemic IDOR: a `GET/PATCH/DELETE` for a resource ID that exists but belongs to a different workspace than the URL says must return `404 not_found`, not the resource.
 
-## Invite tokens (fixes: old code never actually validated the token)
+## Adding members (no tokens)
 
-- `POST /v1/workspaces/{id}/invites` generates a random 32-byte token, returns the **raw** token once in the response (or invite email — plan for a stub email step, sending isn't required, just return the token in the API response so the rewrite is testable), and stores only its SHA-256 hash + `expires_at` in the DB.
-- `POST /v1/invites/{invite_id}/accept` requires `{ invite_token }` in the body; hash it and compare to the stored hash (constant-time). Also require the authenticated caller's email to case-insensitively match `invite.email` — reject with `403 forbidden` (`code: "invite_invalid"`) otherwise. Mark the invite `accepted` and create the membership atomically (one Prisma transaction).
+Accounts are created only by platform admins (no self-signup), so an account's email already identifies its owner.
+
+- `POST /v1/workspaces/{id}/members {email, role}` (owner/admin or platform admin; never above the caller's own role):
+  - an account with that email exists (case-insensitive): it becomes an active member at once (a removed membership is
+    re-activated) -> `201 {status: "added", member}`, audit `member.added`;
+  - no account: a pending `Invite` without token or expiry -> `201 {status: "pending", invite}`, audit `invite.created`;
+  - `409 conflict` when the email is already an active member or already pending.
+- Pending invites addressed to an email become memberships (atomically, audit `invite.accepted` with `via`) when an
+  account with that email is created (`POST /v1/admin/users`, bootstrap) and on every sign-in (dashboard login, desktop
+  device flow). Sign-in also claims live legacy token invites from before this change; expired or revoked ones never.
+- `Membership.addedByUserId` records who added the member (the adder, the inviter of a claimed invite, or the approver of
+  a join request); `GET /v1/workspaces` returns it as `added_by: {id, display_name} | null` with `joined_at`, so the
+  desktop app can say "Ana added you to Team API".
+- Removed: `POST /v1/workspaces/{id}/invites` (token invites) and `POST /v1/invites/{id}/accept`.
 
 ## Pagination (fixes: old code declared cursor pagination but never implemented it; dashboard never wired it up either)
 
@@ -96,16 +108,16 @@ Explicit allowlist via `SLINGER_ALLOWED_ORIGINS` (comma-separated), never a refl
 
 ## Prisma schema — core models (fill in fields per README's resource shapes; this list is the minimum, not exhaustive)
 
-`User`, `Session` (browser sessions: id, userId, csrfTokenHash, expiresAt), `RefreshToken`, `Workspace`, `Membership` (workspaceId, userId, role, status), `Invite` (workspaceId, email, role, tokenHash, expiresAt, status), `JoinRequest`, `WorkspaceHost`, `Collection`, `Folder`, `Request`, `Environment`, `EnvironmentVariable` (with `isSecret`/`maskedValue` handling — mask server-side before serializing, same principle as the desktop app: never return a secret's raw value once `isSecret = true` after the initial write), `SyncClient`, `AuditLog` (append-only; write one row for every workspace-admin-level or platform-admin-level mutation: invite sent, role changed, member removed, workspace deleted, host added — this is what `GET /v1/workspaces/{id}/audit-logs` and `GET /v1/admin/audit-logs` read from, and it did not exist at all in the previous implementation).
+`User`, `Session` (browser sessions: id, userId, csrfTokenHash, expiresAt), `RefreshToken`, `Workspace`, `Membership` (workspaceId, userId, role, status), `Invite` (workspaceId, email, role, tokenHash?, expiresAt?, status), `JoinRequest`, `WorkspaceHost`, `Collection`, `Folder`, `Request`, `Environment`, `EnvironmentVariable` (with `isSecret`/`maskedValue` handling — mask server-side before serializing, same principle as the desktop app: never return a secret's raw value once `isSecret = true` after the initial write), `SyncClient`, `AuditLog` (append-only; write one row for every workspace-admin-level or platform-admin-level mutation: invite sent, role changed, member removed, workspace deleted, host added — this is what `GET /v1/workspaces/{id}/audit-logs` and `GET /v1/admin/audit-logs` read from, and it did not exist at all in the previous implementation).
 
 Every mutable resource has `version INT` and update endpoints must accept the client's expected `version` and reject with `409 conflict` (`code: "version_mismatch"`) on mismatch (optimistic concurrency — the previous implementation accepted a `version` field in some payloads but never actually checked it).
 
 ## What to explicitly test (the previous implementation's test gap list)
 
-- A workspace **Owner** (not a platform admin) successfully invites, approves a join request, edits content, and is blocked from platform-admin-only routes.
+- A workspace **Owner** (not a platform admin) successfully adds a member, approves a join request, edits content, and is blocked from platform-admin-only routes.
 - A workspace **Viewer** is blocked from all write routes including sync push.
 - Cross-workspace IDOR: an editor in workspace A gets 404 (not the resource) when hitting workspace B's collection/request/environment/variable by ID.
-- Invite accept fails for a wrong token and for a mismatched email; succeeds for a correct token + matching email.
+- Adding a member: an existing account joins at once; an email without an account joins when the account is created or signs in; revoked/expired invites are never claimed.
 - Version-mismatch conflict on a stale PATCH.
 - CSRF: a cookie-authenticated mutating request without `X-CSRF-Token` is rejected; a Bearer-token request without it succeeds.
 - Rate limiting kicks in after repeated failed logins.

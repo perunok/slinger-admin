@@ -16,6 +16,7 @@ import { revokeAllUserCredentials } from "../auth/tokens.js";
 import { emailSchema } from "./auth.js";
 import { newPasswordSchema } from "./me.js";
 import { pingDatabase } from "./health.js";
+import { claimPendingInvites } from "../services/members.js";
 
 const id = z.string().min(1).max(64);
 const platformAdmins = requirePlatformRole(["super_admin", "platform_admin"]);
@@ -117,6 +118,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
             password: body.password === undefined ? "generated" : "set_by_admin"
           }
         });
+        await claimPendingInvites(tx, u, req.id, "account_created");
         return u;
       });
       return { user: toAdminUser(user), temporary_password: body.password ? null : password };

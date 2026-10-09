@@ -58,6 +58,9 @@ export const workspaceSchema = z.object({
   member_count: z.number().optional(),
   /** Present on the non-admin list (caller's role). */
   role: workspaceRoleSchema.nullish(),
+  /** GET /workspaces (yours) only: who added you (null if you created it) and when you joined. */
+  added_by: z.object({ id: z.string(), display_name: z.string() }).nullish(),
+  joined_at: z.string().nullish(),
   created_at: z.string().optional(),
   updated_at: z.string().optional(),
   version: z.number().optional(),
@@ -99,11 +102,15 @@ export const inviteSchema = z.object({
 });
 export type Invite = z.infer<typeof inviteSchema>;
 
-export const createInviteResponseSchema = z.object({
-  invite: inviteSchema,
-  /** Raw one-time token. Only ever returned by the create call. */
-  invite_token: z.string().optional(),
-});
+/**
+ * POST /workspaces/{id}/members: an existing account is added at once (`added`); an email without an account gets a
+ * pending invite (`pending`) that turns into a membership when that account is created or signs in. No token.
+ */
+export const addMemberResponseSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('added'), member: memberSchema }),
+  z.object({ status: z.literal('pending'), invite: inviteSchema }),
+]);
+export type AddMemberResponse = z.infer<typeof addMemberResponseSchema>;
 
 export const joinRequestSchema = z.object({
   id: z.string(),

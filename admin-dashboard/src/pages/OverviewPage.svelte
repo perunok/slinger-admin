@@ -50,7 +50,7 @@
 
 <div class="stack">
   <div class="grid-stats">
-    {#each [{ title: 'Users', pick: (x: Stats) => x.users, href: paths.users() }, { title: 'Workspaces', pick: (x: Stats) => x.workspaces, href: paths.workspaces() }, { title: 'Active sessions', pick: (x: Stats) => x.active_sessions }, { title: 'Pending invites', pick: (x: Stats) => x.pending_invites }, { title: 'Pending join requests', pick: (x: Stats) => x.pending_join_requests }] as s (s.title)}
+    {#each [{ title: 'Users', pick: (x: Stats) => x.users, href: paths.users() }, { title: 'Workspaces', pick: (x: Stats) => x.workspaces, href: paths.workspaces() }, { title: 'Active sessions', pick: (x: Stats) => x.active_sessions }, { title: 'Waiting for an account', pick: (x: Stats) => x.pending_invites }, { title: 'Pending join requests', pick: (x: Stats) => x.pending_join_requests }] as s (s.title)}
       <div class="card stat">
         <div class="muted small">{s.title}</div>
         {#if stats.state === 'loading'}

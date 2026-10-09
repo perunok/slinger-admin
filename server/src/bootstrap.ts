@@ -3,6 +3,7 @@ import { prisma as defaultPrisma } from "./db.js";
 import { hashPassword } from "./auth/password.js";
 import { newId } from "./lib/ids.js";
 import type { PrismaClient } from "@prisma/client";
+import { claimPendingInvites } from "./services/members.js";
 
 const WEAK_PASSWORDS = new Set([
   "admin",
@@ -84,14 +85,17 @@ export async function applyBootstrap(
     if (existing) continue;
     const passwordHash = await hashPassword(a.password);
     try {
-      await db.user.create({
-        data: {
-          id: newId(),
-          email: a.email,
-          displayName: a.display_name,
-          passwordHash,
-          platformRole: a.platform_role
-        }
+      await db.$transaction(async (tx) => {
+        const u = await tx.user.create({
+          data: {
+            id: newId(),
+            email: a.email,
+            displayName: a.display_name,
+            passwordHash,
+            platformRole: a.platform_role
+          }
+        });
+        await claimPendingInvites(tx, u, null, "account_created");
       });
       created.push(a.email);
     } catch (err) {

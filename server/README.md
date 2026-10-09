@@ -91,7 +91,7 @@ cd server && npm test        # default TEST_DATABASE_URL=postgresql://postgres:t
 `test/globalSetup.ts` runs `prisma migrate deploy` first. Test data is uniquely named, so the database does not need resetting
 between runs. Every JSON response is additionally validated against its declared zod schema during tests
 (`validateResponses`), which keeps `openapi.yaml` honest. Coverage includes: owner-vs-platform-admin boundaries, viewer blocked
-from every write incl. sync push, cross-workspace IDOR (404s), invite token/email binding, `version_mismatch`, CSRF (cookie vs
+from every write incl. sync push, cross-workspace IDOR (404s), adding members (existing account / pending until the account exists / claimed at sign-in), `version_mismatch`, CSRF (cookie vs
 Bearer), login rate limiting, CORS allowlist, request-id propagation, body cap, secret masking, cursor pagination on every
 list, audit-log writes, sync push/pull (incl. tombstones for cascaded folder/collection/environment deletes), sync v2 (`test/syncV2.test.ts`: sort_order, request moves, secret metadata, collection versions, snapshot with ~2k entities, limits, idempotent replays, two-client convergence, role matrix and cross-workspace IDOR), sync extensions (`test/syncLocalOnly.test.ts`: scripts/docs, collection variables, globals, per-client shaping, caps, duplicate keys, cascades, secret metadata, roles, IDOR), admin routes (incl. a disabled user's sessions,
 access tokens and refresh tokens being rejected, and the 503 health body), hosts + DNS verification, the Postgres-backed rate limit
@@ -182,10 +182,10 @@ route uses; nothing is hand-rolled per handler. `platform` = `super_admin` or `p
 |---|---|
 | Read content (collections/folders/requests/environments/variables), members list, sync pull, realtime/collab tokens | platform admin **or** any active member (owner/admin/editor/viewer) |
 | Write content (create/update/delete of the above), sync push | platform admin **or** owner/admin/editor. **Viewer: never** |
-| Invite members, revoke invites, list/approve/reject join requests, read workspace audit log | platform admin **or** owner/admin (never granting a role above the caller's own; approval without `role` grants `default_role_for_requests`) |
+| Add members, list/cancel pending additions, list/approve/reject join requests, read workspace audit log | platform admin **or** owner/admin (never granting a role above the caller's own; approval without `role` grants `default_role_for_requests`) |
 | Change member role, remove member, manage hosts (list/add/verify/remove), update workspace settings | platform admin **or** owner |
 | Delete workspace | `super_admin` **or** owner (`platform_admin` alone is **not** enough) |
-| Create workspace / publish / request to join / accept an invite / resolve | any authenticated user (accept needs the invite token **and** the invited email) |
+| Create workspace / publish / request to join / resolve | any authenticated user |
 | `/v1/admin/*` | platform admin only |
 | `POST /v1/admin/users` with `platform_role: platform_admin`, `PATCH /v1/admin/users/{id}` role changes or any change to an admin, password reset of an admin, `DELETE /v1/admin/workspaces/{id}` | `super_admin` only |
 | `POST /v1/admin/users/{id}/reset-password` | platform admin for regular users; never yourself (use `POST /v1/me/password`), so never the super admin |
@@ -193,10 +193,11 @@ route uses; nothing is hand-rolled per handler. `platform` = `super_admin` or `p
 
 Notes: the workspace owner's role can't be changed or removed; the single `super_admin` can't be created, demoted or disabled via the API.
 Non-members get the same `403 workspace_access_denied` for real and nonexistent workspace ids. Resources are always looked up by
-`(id, workspace_id)`; an id from another workspace yields `404 not_found`. Invite tokens: 32 random bytes, only the SHA-256 is stored,
-compared in constant time, all failures return the same `403 invite_invalid`.
+`(id, workspace_id)`; an id from another workspace yields `404 not_found`. Adding a member needs no token: accounts exist only when an admin creates them
+(no self-signup), so the account's email is the proof. An email without an account becomes a pending invite (no token, no
+expiry) that turns into a membership when an account with that email is created or signs in.
 Audit log rows (`GET /v1/workspaces/{id}/audit-logs`, `GET /v1/admin/audit-logs`) are written in the same transaction as
-`workspace.created|updated|deleted|published`, `member.role_changed|removed`, `invite.created|revoked|accepted`,
+`workspace.created|updated|deleted|published`, `member.added|role_changed|removed`, `invite.created|revoked|accepted` (pending additions; details `via`: `account_created`/`sign_in`),
 `join_request.approved|rejected` (details: `role`, `requested_role`, `role_source: explicit|workspace_default`), `host.added|verified|removed`,
 `admin.user_created|user_updated|user_role_changed|user_password_reset|workspace_deleted`, `user.password_changed` (details: `was_required`, `via`;
 never the password).
@@ -233,7 +234,7 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 
 | Method | Path | Auth / access | Success | Summary |
 |---|---|---|---|---|
-| `GET` | `/v1/workspaces` | auth | 200 | Workspaces the caller is an active member of (with the caller's role) |
+| `GET` | `/v1/workspaces` | auth | 200 | Workspaces the caller is an active member of (with the caller's role, `joined_at`, and `added_by` `{id, display_name}` or null) |
 | `POST` | `/v1/workspaces` | auth | 201 | Create a workspace; the caller becomes its owner |
 | `GET` | `/v1/workspaces/resolve` | auth | 200 | Resolve a workspace by id, slug or active host binding (minimal fields; for join-request discovery) |
 | `POST` | `/v1/workspaces/publish` | auth | 201 | Publish a local desktop workspace (create) or bind to an existing one (attach_existing) |
@@ -246,12 +247,11 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 | Method | Path | Auth / access | Success | Summary |
 |---|---|---|---|---|
 | `GET` | `/v1/workspaces/{workspaceId}/members` | auth — any active member, or platform admin | 200 | List active members |
+| `POST` | `/v1/workspaces/{workspaceId}/members` | auth — workspace owner/admin, or platform admin | 201 | Add a member by email: an existing account joins at once (`status: "added"`), an email without an account waits (`status: "pending"`) |
 | `PATCH` | `/v1/workspaces/{workspaceId}/members/{memberId}` | auth — workspace owner, or platform admin | 200 | Change a member's role (the workspace owner's role cannot be changed) |
 | `DELETE` | `/v1/workspaces/{workspaceId}/members/{memberId}` | auth — workspace owner, or platform admin | 200 | Remove a member (soft: status becomes `removed`); the owner cannot be removed |
-| `GET` | `/v1/workspaces/{workspaceId}/invites` | auth — workspace owner/admin, or platform admin | 200 | List invites |
-| `POST` | `/v1/workspaces/{workspaceId}/invites` | auth — workspace owner/admin, or platform admin | 201 | Invite a user by email. The raw `invite_token` is returned ONCE; only its SHA-256 hash is stored. |
-| `DELETE` | `/v1/workspaces/{workspaceId}/invites/{inviteId}` | auth — workspace owner/admin, or platform admin | 200 | Revoke a pending invite |
-| `POST` | `/v1/invites/{inviteId}/accept` | auth | 200 | Accept an invite (token must match, caller's email must match the invited email) |
+| `GET` | `/v1/workspaces/{workspaceId}/invites` | auth — workspace owner/admin, or platform admin | 200 | List invites: people added before they had an account (`?status=pending`), plus legacy token invites |
+| `DELETE` | `/v1/workspaces/{workspaceId}/invites/{inviteId}` | auth — workspace owner/admin, or platform admin | 200 | Cancel a pending addition (the person is not added when their account is created) |
 | `POST` | `/v1/workspaces/{workspaceId}/join-requests` | auth — any authenticated user who is not already an active member | 201 | Ask to join a workspace |
 | `GET` | `/v1/workspaces/{workspaceId}/join-requests` | auth — workspace owner/admin, or platform admin | 200 | List join requests |
 | `POST` | `/v1/workspaces/{workspaceId}/join-requests/{joinRequestId}/approve` | auth — workspace owner/admin, or platform admin | 200 | Approve a join request and create the membership (atomic) |
@@ -338,8 +338,9 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 - **Publish** `POST /v1/workspaces/publish`: `{local_workspace:{name, proposed_slug?}, publish_mode:"create"|"attach_existing", workspace_id?, client?:{client_id?, device_name?}}`
   -> `{workspace, membership:{role}, sync_bootstrap:{client_id, checkpoint}}`.
 - **Member**: `id, workspace_id, user_id, email, display_name, role, status, joined_at, ..., version`; `PATCH {role: admin|editor|viewer, version}`.
-- **Invite**: create `{email, role}` -> `{invite, invite_token}` (token returned once; deliver it out of band, email sending is stubbed);
-  accept `POST /v1/invites/{invite_id}/accept {invite_token}` -> `{workspace_id, membership:{role}}`.
+- **Add member**: `POST /v1/workspaces/{id}/members {email, role}` -> `{status: "added", member}` or `{status: "pending", invite}`
+  (no account yet: it becomes a membership when the account is created or signs in). The workspace then appears in the
+  person's `GET /v1/workspaces` (dashboard and desktop app), with `added_by`.
 - **Join request**: `{id, requester_user_id, requester_email, requester_display_name, message, status, requested_role, version, ...}`; create `{message?, requested_role?}` -> `{join_request}`; approve `{role?, version?}` -> `{membership}` (no `role`: the workspace's `default_role_for_requests`; `requested_role` is only a hint); reject `{version?}`.
 - **Host**: `{host, kind: dedicated_subdomain|custom_domain}` -> `{host:{id,host,kind,status,tls_status,...}, verification:{dns_record_type:"TXT", dns_record_name, dns_record_value}|null}`;
   `POST .../hosts/{host_id}/verify` -> `{host, verified}`.
@@ -456,7 +457,7 @@ variables, workspace globals.
   workspace/admin `audit-logs` ordering option, `disabled` users, `must_change_password` + `POST /v1/admin/users/{id}/reset-password`,
   the `denied` device-poll status.
 - The old three-step `/device/identify` + `/device/password` pages are replaced by a single `/device` form (code + email + password).
-- Members are removed softly (`status: removed`, row kept) and can be re-invited.
+- Members are removed softly (`status: removed`, row kept) and can be added again.
 - Health: `/healthz` and `/v1/admin/health` report only `api` and `postgres` (no Redis/realtime service exists in this stack).
 
 ## Known limitations / not built
@@ -471,5 +472,5 @@ variables, workspace globals.
 - Password policy is length-only (12-256, different from the current one); no breached-password or complexity check.
 - Sync-log entries for cascaded children are emitted in the same transaction as the parent delete; they carry each child's last
   version. A client that pushes a delete for a cascaded child afterwards gets the normal "already deleted" outcome.
-- No email delivery (invite token is returned in the API response), no TLS provisioning logic in the API (Caddy does it), no realtime service.
+- No email delivery (added people see the workspace when they sign in), no TLS provisioning logic in the API (Caddy does it), no realtime service.
 - Secret variable values are encrypted at rest (key derived from `SLINGER_SIGNING_SECRET`) and the API has no decrypt path: they are write-only until a consumer with the key exists.

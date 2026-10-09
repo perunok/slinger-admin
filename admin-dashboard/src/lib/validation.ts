@@ -95,7 +95,8 @@ export function validateWorkspaceSettings(v: { name: string; description: string
   return e;
 }
 
-export function validateInvite(v: { email: string }): Errors<'email'> {
+/** Add-member form: the email of the person to add (an account need not exist yet). */
+export function validateMemberEmail(v: { email: string }): Errors<'email'> {
   const e: Errors<'email'> = {};
   if (!v.email.trim()) e.email = 'Email is required.';
   else if (!isEmail(v.email)) e.email = 'Enter a valid email address.';

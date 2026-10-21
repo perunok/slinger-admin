@@ -93,7 +93,7 @@ between runs. Every JSON response is additionally validated against its declared
 (`validateResponses`), which keeps `openapi.yaml` honest. Coverage includes: owner-vs-platform-admin boundaries, viewer blocked
 from every write incl. sync push, cross-workspace IDOR (404s), adding members (existing account / pending until the account exists / claimed at sign-in), `version_mismatch`, CSRF (cookie vs
 Bearer), login rate limiting, CORS allowlist, request-id propagation, body cap, secret masking, cursor pagination on every
-list, audit-log writes, sync push/pull (incl. tombstones for cascaded folder/collection/environment deletes), sync v2 (`test/syncV2.test.ts`: sort_order, request moves, secret metadata, collection versions, snapshot with ~2k entities, limits, idempotent replays, two-client convergence, role matrix and cross-workspace IDOR), sync extensions (`test/syncLocalOnly.test.ts`: scripts/docs, collection variables, globals, per-client shaping, caps, duplicate keys, cascades, secret metadata, roles, IDOR), admin routes (incl. a disabled user's sessions,
+list, audit-log writes, sync push/pull (incl. tombstones for cascaded folder/collection/environment deletes), sync v2 (`test/syncV2.test.ts`: sort_order, request moves, secret metadata, collection versions, snapshot with ~2k entities, limits, idempotent replays, two-client convergence, role matrix and cross-workspace IDOR), sync extensions (`test/syncLocalOnly.test.ts`: scripts/docs, collection variables, globals, per-client shaping, caps, duplicate keys, cascades, secret metadata, roles, IDOR), version authors (`test/versionAuthors.test.ts`: author via sync push and REST, per-client shaping, forged `created_by`, rename/account deletion, legacy rows), admin routes (incl. a disabled user's sessions,
 access tokens and refresh tokens being rejected, and the 503 health body), hosts + DNS verification, the Postgres-backed rate limit
 store shared by two app instances, bootstrap validation and production config failures, password change/reset and `must_change_password`
 (`test/account.test.ts`: session/token revocation, forced-change route gate, device-flow refusal, rate limit), default role for join requests.
@@ -280,6 +280,9 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 | `GET` | `/v1/workspaces/{workspaceId}/folders/{folderId}` | auth — any active workspace member, or platform admin | 200 | Get a folder |
 | `PATCH` | `/v1/workspaces/{workspaceId}/folders/{folderId}` | auth — workspace owner/admin/editor, or platform admin (viewers are read-only) | 200 | Rename/move a folder |
 | `DELETE` | `/v1/workspaces/{workspaceId}/folders/{folderId}` | auth — workspace owner/admin/editor, or platform admin (viewers are read-only) | 200 | Delete a folder (cascades to child folders and their requests) |
+| `GET` | `/v1/workspaces/{workspaceId}/collections/{collectionId}/versions` | auth — any active workspace member, or platform admin | 200 | List a collection's versions (without the snapshot) |
+| `POST` | `/v1/workspaces/{workspaceId}/collections/{collectionId}/versions` | auth — workspace owner/admin/editor, or platform admin (viewers are read-only) | 201 | Create a collection version |
+| `GET` | `/v1/workspaces/{workspaceId}/collections/{collectionId}/versions/{versionId}` | auth — any active workspace member, or platform admin | 200 | Get a collection version (with its snapshot) |
 | `GET` | `/v1/workspaces/{workspaceId}/collections/{collectionId}/requests` | auth — any active workspace member, or platform admin | 200 | List a collection's requests |
 | `POST` | `/v1/workspaces/{workspaceId}/collections/{collectionId}/requests` | auth — workspace owner/admin/editor, or platform admin (viewers are read-only) | 201 | Create a request |
 | `GET` | `/v1/workspaces/{workspaceId}/requests/{requestId}` | auth — any active workspace member, or platform admin | 200 | Get a request |
@@ -345,7 +348,9 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 - **Host**: `{host, kind: dedicated_subdomain|custom_domain}` -> `{host:{id,host,kind,status,tls_status,...}, verification:{dns_record_type:"TXT", dns_record_name, dns_record_value}|null}`;
   `POST .../hosts/{host_id}/verify` -> `{host, verified}`.
 - **Content**: collection `{name}`; folder `{name, parent_folder_id?, sort_order?}`; request `{name, method (any HTTP token), url, document_json, folder_id?, sort_order?}`; environment `{name}`;
-  variable `PUT .../variables/{key}` `{value, is_secret?, version?}` -> `{variable:{id, environment_id, key, value, masked_value, is_secret, version,...}}`.
+  variable `PUT .../variables/{key}` `{value, is_secret?, version?}` -> `{variable:{id, environment_id, key, value, masked_value, is_secret, version,...}}`;
+  collection version `POST .../collections/{id}/versions {semver, snapshot_json, notes?, folder_count?, request_count?, created_at?}` -> `{version:{id, workspace_id, collection_id, semver, notes, folder_count, request_count, created_by, created_at, version, snapshot_json}}`
+  (`created_by` is `{id, display_name}` or `null` and always the caller; the list omits `snapshot_json`).
 - **Sync** (protocol v2, see the "Sync protocol v2" section): push `{client_id, base_checkpoint?, operations:[{operation_id, resource_type: collection|folder|request|environment|environment_variable|collection_version, resource_id, op: upsert|delete, base_version, payload, occurred_at?}]}`
   -> `{accepted:[{operation_id, resource_id, resulting_version}], rejected:[{operation_id, resource_id, code, reason, message, current_version, current_payload, conflicting_resource_id}], checkpoint}`;
   pull `GET .../sync/pull?client_id=&after_checkpoint=&limit=` -> `{operations:[{..., checkpoint}], checkpoint, has_more}`;
@@ -365,8 +370,8 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 Server side of `slinger/docs/SYNC_DESIGN.md` (section 14). Everything is additive: v1 clients keep working (they ignore `reason`,
 `current_payload`, `sort_order`, ...). Register (`POST /v1/sync/clients/register`) answers `protocol_version: 2` and
 `features: ["sort_order","snapshot","collection_version","secret_metadata","op_reasons","request_move","folder_scripts","docs",
-"collection_variables","globals"]`; a desktop that needs them must refuse to sync against a server that does not advertise
-`protocol_version >= 2`. The last four are the additive extensions below ("Extensions"): they are served only to clients that
+"collection_variables","globals","version_authors"]`; a desktop that needs them must refuse to sync against a server that does not advertise
+`protocol_version >= 2`. The last five are the additive extensions below ("Extensions"): they are served only to clients that
 declare them.
 
 **Wire payloads** (identical in pull, snapshot and `current_payload`):
@@ -378,7 +383,7 @@ declare them.
 | `folder` | `{collection_id, parent_folder_id, name, sort_order}` + the same extension fields as a collection |
 | `request` | `{collection_id, folder_id, name, method, url, document_json, sort_order}` |
 | `environment_variable` | `{environment_id, key, value, is_secret}`; `value` is always `null` when `is_secret` |
-| `collection_version` | `{collection_id, semver, notes, snapshot_json, folder_count, request_count, created_at}` (immutable) |
+| `collection_version` | `{collection_id, semver, notes, snapshot_json, folder_count, request_count, created_at}` + `{created_by}` (feature `version_authors`) (immutable) |
 | `collection_variable` | `{collection_id, key, value, enabled, description, sort_order}` (feature `collection_variables`; never secret) |
 | `global_variable` | `{key, value, is_secret, enabled, description, sort_order}` (feature `globals`; `value` is always `null` when `is_secret`) |
 
@@ -430,7 +435,7 @@ newer than `checkpoint` (writes during the download); after the last page the cl
 operations whose `resulting_version` is newer than what it holds. No tombstones.
 
 **Extensions** (slinger `docs/SYNC_DESIGN.md` section 21; additive, protocol stays 2): collection/folder scripts and docs, collection
-variables, workspace globals.
+variables, workspace globals, version authors.
 - *Declaration*: the client lists the extension features it understands on every call: `features=a,b` query parameter on pull and
   snapshot, `features: [...]` in the push body (optional and informational in the register body). Resource types of undeclared
   features are left out of pull pages (the checkpoint still advances over them) and snapshots; undeclared collection/folder fields
@@ -445,6 +450,14 @@ variables, workspace globals.
 - *Cascades*: deleting a collection logs a tombstone per collection variable (before the collection's own); deleting a workspace
   removes its globals (FK cascade, the log goes with it). Snapshot order appends `collection_variable`, `global_variable` after
   `collection_version`.
+- *Version authors* (`version_authors`, Slinger Cloud 0.4.0; the REST version endpoints `GET|POST .../versions` and `GET .../versions/{id}` are new in 0.4.0 too): the server stores who created every collection version (`collection_versions.created_by_user_id`,
+  FK `users` ON DELETE SET NULL, and `created_by_name`, the display name at creation so it survives renames and account deletion). The
+  author is always the authenticated user performing the write (sync push or `POST .../versions`); a client-sent `created_by` is
+  ignored and an identical re-send of an existing version never changes it. A `collection_version` payload sent to a client that
+  declared `version_authors` (pull, snapshot, `current_payload` of `immutable`/`version_mismatch` rejections) gets `created_by:
+  {id: string | null, display_name: string} | null`: `null` for a version created before authors were recorded, `id` null once the
+  account is deleted (snapshot, rejections and REST read the live row; a pull entry carries the id as of the write). Clients that did
+  not declare it never see the field. Delete tombstones keep an empty payload. The REST version objects always include `created_by`. The REST create ignores a client-sent `created_at`; a sync push's `created_at` is capped at the server's clock.
 
 **Limits**: `SLINGER_SYNC_RATE_LIMIT_PER_MINUTE` (default 120 requests/user/minute over register, push, pull, snapshot) answers
 `429 rate_limited` + `Retry-After`. Other routes keep the 1 MB body cap.

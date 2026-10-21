@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type {
-  AuditLog, Collection, Environment, EnvironmentVariable, Folder, Invite, JoinRequest, Membership,
+  AuditLog, Collection, CollectionVersion, Environment, EnvironmentVariable, Folder, Invite, JoinRequest, Membership,
   Request as RequestRow, User, Workspace, WorkspaceHost
 } from "@prisma/client";
 
@@ -61,6 +61,15 @@ export const hostVerificationSchema = z.object({
 export const collectionSchema = z.object({
   id, workspace_id: id, name: z.string(), created_at: ts, updated_at: ts, version: z.number().int()
 });
+/** Who created a collection version: null for versions created before authors were recorded; `id` null once the account is deleted. */
+export const versionAuthorSchema = z.object({ id: id.nullable(), display_name: z.string() }).nullable();
+export const collectionVersionSchema = z.object({
+  id, workspace_id: id, collection_id: id, semver: z.string(), notes: z.string().nullable(),
+  folder_count: z.number().int(), request_count: z.number().int(), created_by: versionAuthorSchema,
+  created_at: ts, version: z.number().int()
+});
+/** The single-version view adds the (possibly large) collection snapshot. */
+export const collectionVersionDetailSchema = collectionVersionSchema.extend({ snapshot_json: z.string() });
 export const folderSchema = z.object({
   id, workspace_id: id, collection_id: id, parent_folder_id: id.nullable(), name: z.string(),
   sort_order: z.number().int(), created_at: ts, updated_at: ts, version: z.number().int()
@@ -126,6 +135,14 @@ export const toCollection = (c: Collection) => ({
   id: c.id, workspace_id: c.workspaceId, name: c.name, created_at: iso(c.createdAt),
   updated_at: iso(c.updatedAt), version: c.version
 });
+export const versionAuthor = (v: Pick<CollectionVersion, "createdByUserId" | "createdByName">): z.infer<typeof versionAuthorSchema> =>
+  v.createdByName === null ? null : { id: v.createdByUserId, display_name: v.createdByName };
+export const toCollectionVersion = (v: Omit<CollectionVersion, "snapshotJson">) => ({
+  id: v.id, workspace_id: v.workspaceId, collection_id: v.collectionId, semver: v.semver, notes: v.notes,
+  folder_count: v.folderCount, request_count: v.requestCount, created_by: versionAuthor(v), created_at: iso(v.createdAt),
+  version: v.version
+});
+export const toCollectionVersionDetail = (v: CollectionVersion) => ({ ...toCollectionVersion(v), snapshot_json: v.snapshotJson });
 export const toFolder = (f: Folder) => ({
   id: f.id, workspace_id: f.workspaceId, collection_id: f.collectionId, parent_folder_id: f.parentFolderId,
   name: f.name, sort_order: f.sortOrder, created_at: iso(f.createdAt), updated_at: iso(f.updatedAt), version: f.version

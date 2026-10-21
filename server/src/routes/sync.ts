@@ -22,7 +22,7 @@ export const SYNC_FEATURES = [
 ] as const;
 /** Declaration of the extension features a client understands (see services/syncFeatures.ts). */
 const featureList = z.array(z.string().max(64)).max(50);
-const featureQuery = z.string().max(1000).optional().describe("Comma separated extension features the client understands (folder_scripts, docs, collection_variables, globals)");
+const featureQuery = z.string().max(1000).optional().describe("Comma separated extension features the client understands (folder_scripts, docs, collection_variables, globals, version_authors)");
 
 const operationSchema = z.object({
   operation_id: id,
@@ -158,7 +158,7 @@ export function registerSyncRoutes(app: FastifyInstance): void {
     description:
       "Returns the sync `protocol_version` and `features` the server supports. Desktop builds that need sort_order, " +
       "snapshot, collection versions and secret metadata require `protocol_version >= 2`. Extension features " +
-      "(folder_scripts, docs, collection_variables, globals) are only served to clients that declare them on each sync call " +
+      "(folder_scripts, docs, collection_variables, globals, version_authors) are only served to clients that declare them on each sync call " +
       "(`features`); the optional `features` in this body is informational.",
     tags: ["Sync"],
     auth: "user",
@@ -207,7 +207,8 @@ export function registerSyncRoutes(app: FastifyInstance): void {
       "snapshot_json 8000000 bytes), `id_in_use`, `duplicate_key`, `immutable` (collection_version updates). " +
       "Secret variables are metadata only: `{key, value: null, is_secret: true}`; a secret with a value is `invalid`. " +
       "The body limit for this route is larger than elsewhere (default 8 MiB, `SLINGER_SYNC_BODY_LIMIT_BYTES`); " +
-      "`base_checkpoint` is informational. Each push writes one audit summary entry (`sync.push`), not one per operation.",
+      "`base_checkpoint` is informational. Each push writes one audit summary entry (`sync.push`), not one per operation. " +
+      "The author of a created `collection_version` is the authenticated user; a `created_by` in the payload is ignored.",
     access: "workspace owner/admin/editor, or platform admin",
     tags: ["Sync"],
     auth: "user",
@@ -249,7 +250,7 @@ export function registerSyncRoutes(app: FastifyInstance): void {
           continue;
         }
         try {
-          const version = await prisma.$transaction((tx) => applyOperation(tx, wsId, client.id, op, secret));
+          const version = await prisma.$transaction((tx) => applyOperation(tx, wsId, client.id, op, secret, { id: req.auth!.user.id, displayName: req.auth!.user.displayName }));
           accepted.push({ operation_id: op.operation_id, resource_id: op.resource_id, resulting_version: version });
         } catch (err) {
           const code = (err as { code?: string }).code;
@@ -300,7 +301,9 @@ export function registerSyncRoutes(app: FastifyInstance): void {
       "a page holds at most `limit` operations and roughly 8 MiB of payload (`has_more` tells whether to continue). " +
       "Every delete, including cascaded ones (folder/collection/environment deletes), has its own tombstone entry. " +
       "Resource types and collection/folder fields of extension features the client did not declare in `features` are left out " +
-      "(the checkpoint still advances over them); the response repeats the server's `features`.",
+      "(the checkpoint still advances over them), and a `collection_version` payload carries `created_by` ({id, display_name} or null " +
+      "for a version created before authors were recorded) only for clients declaring `version_authors`; " +
+      "the response repeats the server's `features`.",
     access: "any active workspace member, or platform admin",
     tags: ["Sync"],
     auth: "user",
@@ -363,7 +366,8 @@ export function registerSyncRoutes(app: FastifyInstance): void {
       "than `checkpoint` and the log replay is idempotent by version comparison. Secret values are masked (`value: null`). " +
       "No tombstones. A page holds at most `limit` entities and roughly 8 MiB of payload. Extension types " +
       "(collection_variable, global_variable, after collection_version) and collection/folder fields are included only for the " +
-      "features the client declares in `features`; the response repeats the server's `features`.",
+      "features the client declares in `features` (`created_by` of a `collection_version` needs `version_authors`); " +
+      "the response repeats the server's `features`.",
     access: "any active workspace member, or platform admin",
     tags: ["Sync"],
     auth: "user",

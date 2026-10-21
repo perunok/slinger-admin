@@ -2,11 +2,12 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../db.js";
 import { AppError } from "../lib/errors.js";
+import { newId } from "../lib/ids.js";
 import { defineRoute } from "../lib/route.js";
 import { pageArgs, paginationQuerySchema, sortedPageArgs, toPage, toSortedPage, withCursor, withSortedCursor } from "../lib/pagination.js";
 import {
-  collectionSchema, environmentSchema, folderSchema, ok, okSchema, paged, requestSchema, toCollection,
-  toEnvironment, toFolder, toRequest, toVariable, variableSchema
+  collectionSchema, collectionVersionDetailSchema, collectionVersionSchema, environmentSchema, folderSchema, ok, okSchema, paged, requestSchema, toCollection,
+  toCollectionVersion, toCollectionVersionDetail, toEnvironment, toFolder, toRequest, toVariable, variableSchema
 } from "../lib/dto.js";
 import { requireWorkspaceRole } from "../auth/middleware.js";
 import * as content from "../services/content.js";
@@ -19,6 +20,7 @@ const WRITE = "workspace owner/admin/editor, or platform admin (viewers are read
 
 const ws = { workspaceId: id };
 const collectionParams = z.object({ ...ws, collectionId: id });
+const collectionVersionParams = z.object({ ...ws, collectionId: id, versionId: id });
 const folderParams = z.object({ ...ws, folderId: id });
 const requestParams = z.object({ ...ws, requestId: id });
 const envParams = z.object({ ...ws, environmentId: id });
@@ -135,6 +137,51 @@ export function registerContentRoutes(app: FastifyInstance): void {
     handler: async ({ params, query }) => {
       await prisma.$transaction((tx) => content.deleteFolder(tx, params.workspaceId, params.folderId, query.version));
       return ok();
+    }
+  });
+
+  // ------------------------------------------------------------ collection versions (immutable snapshots)
+  defineRoute(app, {
+    method: "GET", url: "/v1/workspaces/:workspaceId/collections/:collectionId/versions",
+    summary: "List a collection's versions (without the snapshot)",
+    description: "Each version carries `created_by` ({id, display_name}, or null for a version created before authors were recorded; `id` is null once the author's account was deleted).",
+    access: READ, tags: ["Content"], auth: "user", pre: [read], params: collectionParams, query: paginationQuerySchema,
+    responses: { 200: paged(collectionVersionSchema) }, errors: [400, 401, 403, 404],
+    handler: async ({ params, query }) => {
+      const col = await prisma.collection.findFirst({ where: { id: params.collectionId, workspaceId: params.workspaceId } });
+      if (!col) throw new AppError("not_found", "collection not found");
+      const a = pageArgs(query);
+      const rows = await prisma.collectionVersion.findMany({
+        where: withCursor({ workspaceId: params.workspaceId, collectionId: col.id }, a), orderBy: a.orderBy, take: a.take,
+        omit: { snapshotJson: true }
+      });
+      return toPage(rows, query.limit, toCollectionVersion);
+    }
+  });
+  defineRoute(app, {
+    method: "POST", url: "/v1/workspaces/:workspaceId/collections/:collectionId/versions", summary: "Create a collection version",
+    description: "Versions are immutable. The author (`created_by`) is the authenticated user; a client-sent `created_by` or `created_at` is ignored (the server's clock applies).",
+    access: WRITE, tags: ["Content"], auth: "user", pre: [write], params: collectionParams,
+    body: content.collectionVersionData.omit({ collection_id: true, created_at: true }),
+    responses: { 201: z.object({ version: collectionVersionDetailSchema }) }, errors: [400, 401, 403, 404, 409],
+    handler: async ({ req, params, body }) => {
+      const actor = { id: req.auth!.user.id, displayName: req.auth!.user.displayName };
+      const row = await prisma.$transaction((tx) =>
+        content.createCollectionVersion(tx, params.workspaceId, newId(), { ...body, collection_id: params.collectionId }, { actor })
+      );
+      return { version: toCollectionVersionDetail(row) };
+    }
+  });
+  defineRoute(app, {
+    method: "GET", url: "/v1/workspaces/:workspaceId/collections/:collectionId/versions/:versionId",
+    summary: "Get a collection version (with its snapshot)", access: READ, tags: ["Content"], auth: "user", pre: [read],
+    params: collectionVersionParams, responses: { 200: z.object({ version: collectionVersionDetailSchema }) }, errors: [401, 403, 404],
+    handler: async ({ params }) => {
+      const row = await prisma.collectionVersion.findFirst({
+        where: { id: params.versionId, collectionId: params.collectionId, workspaceId: params.workspaceId }
+      });
+      if (!row) throw new AppError("not_found", "collection version not found");
+      return { version: toCollectionVersionDetail(row) };
     }
   });
 

@@ -129,7 +129,7 @@ Authoritative design: `slinger/docs/SYNC_DESIGN.md` section 14. Server details a
 ("Sync protocol v2"). All changes are additive; v1 clients keep working.
 
 - **Capability advertisement**: `POST /v1/sync/clients/register` -> `201 {client, protocol_version: 2, features: [...]}`.
-- **New resource type** `collection_version` (immutable): payload `{collection_id, semver, notes, snapshot_json, folder_count, request_count, created_at}`.
+- **New resource type** `collection_version` (immutable): payload `{collection_id, semver, notes, snapshot_json, folder_count, request_count, created_at}` (+ `created_by` with feature `version_authors`, below).
   Prisma model `CollectionVersion` (unique `(collectionId, semver)`); deleting a collection logs a tombstone per version.
 - **`sort_order`** (int 0..2e9, default 0) on folders and requests: REST create/patch bodies and responses, sync payloads. REST lists of
   folders and requests are ordered by `(sort_order, id)`; their `cursor` is `base64url("<sort_order>#<id>")` (all other lists keep `(created_at, id)`).
@@ -149,7 +149,7 @@ Authoritative design: `slinger/docs/SYNC_DESIGN.md` section 14. Server details a
 
 Authoritative design: `slinger/docs/SYNC_DESIGN.md` section 21; details in `server/README.md` ("Extensions").
 
-- **Features** `folder_scripts`, `docs`, `collection_variables`, `globals` are added to the register `features` and returned as
+- **Features** `folder_scripts`, `docs`, `collection_variables`, `globals` (and `version_authors`, below) are added to the register `features` and returned as
   `features` in every pull and snapshot response.
 - **Client declaration**: `?features=a,b` on pull/snapshot, `features: [...]` in the push body. Undeclared resource types are left
   out (pull checkpoint still advances), undeclared collection/folder fields are stripped (pull, snapshot, `current_payload`), so
@@ -163,3 +163,23 @@ Authoritative design: `slinger/docs/SYNC_DESIGN.md` section 21; details in `serv
   `CollectionVariable`, `GlobalVariable`; migration `sync_local_only`.
 - **Cascades**: a collection delete logs a tombstone per collection variable; a workspace delete removes its globals.
 - No REST content endpoints for these yet (sync only).
+
+### Extension: version authors (`version_authors`, Slinger Cloud 0.4.0, additive, protocol version stays 2)
+
+Authoritative design: `slinger/docs/SYNC_DESIGN.md` section 21; server details in `server/README.md` ("Extensions").
+
+- **Feature** `version_authors` is added to the register `features` and to every pull/snapshot answer.
+- **Storage**: `collection_versions.created_by_user_id` (FK `users`, ON DELETE SET NULL) and `created_by_name` (display name at
+  creation). The author is the authenticated user of the write (sync push or REST create). A client can never supply or change it:
+  a `created_by` in a push payload or REST body is ignored.
+- **Wire**: a `collection_version` payload sent to a client that declared the feature (pull, snapshot, `current_payload` of
+  rejections) gains `created_by: {id: string | null, display_name: string} | null`. `null` = created before authors were
+  recorded; `id` null = the account was deleted (the name stays). Clients that did not declare the feature see the previous wire.
+  Clients never send `created_by`; a re-send of an existing version never changes its author.
+- **REST** (new in 0.4.0, read + create): `GET|POST /v1/workspaces/{id}/collections/{cid}/versions`, `GET .../versions/{versionId}`. Version
+  object: `id, workspace_id, collection_id, semver, notes, folder_count, request_count, created_by, created_at, version`
+  (+ `snapshot_json` on get and create, not in the list). Create body: `{semver, snapshot_json, notes?, folder_count?,
+  request_count?}`; duplicate `semver` -> `409 conflict`. A client-sent `created_at` is ignored on REST (the server's clock applies). Versions are immutable (no PATCH); delete is sync only.
+- **Time**: a sync push may carry `created_at` (a version made offline keeps its own time), but the server caps it at its own
+  clock (`min(created_at, now)`); an unparsable value is refused like any invalid payload.
+- Migration `version_authors`.

@@ -4493,6 +4493,424 @@ paths:
             type: integer
             minimum: 1
       x-access: workspace owner/admin/editor, or platform admin (viewers are read-only)
+  /v1/workspaces/{workspaceId}/collections/{collectionId}/versions:
+    get:
+      operationId: getV1WorkspacesWorkspaceIdCollectionsCollectionIdVersions
+      summary: List a collection's versions (without the snapshot)
+      tags:
+        - Content
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+          csrfToken: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        workspace_id:
+                          type: string
+                        collection_id:
+                          type: string
+                        semver:
+                          type: string
+                        notes:
+                          type: string
+                          nullable: true
+                        folder_count:
+                          type: integer
+                        request_count:
+                          type: integer
+                        created_by:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                              nullable: true
+                            display_name:
+                              type: string
+                          required:
+                            - id
+                            - display_name
+                          additionalProperties: false
+                          nullable: true
+                        created_at:
+                          type: string
+                          format: date-time
+                        version:
+                          type: integer
+                      required:
+                        - id
+                        - workspace_id
+                        - collection_id
+                        - semver
+                        - notes
+                        - folder_count
+                        - request_count
+                        - created_by
+                        - created_at
+                        - version
+                      additionalProperties: false
+                  page:
+                    type: object
+                    properties:
+                      next_cursor:
+                        type: string
+                        nullable: true
+                      has_more:
+                        type: boolean
+                    required:
+                      - next_cursor
+                      - has_more
+                    additionalProperties: false
+                required:
+                  - items
+                  - page
+                additionalProperties: false
+        "400":
+          description: Invalid request (zod validation failed, malformed JSON, bad cursor)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      description: |-
+        Each version carries `created_by` ({id, display_name}, or null for a version created before authors were recorded; `id` is null once the author's account was deleted).
+
+        **Access:** any active workspace member, or platform admin.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 512
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+            default: asc
+      x-access: any active workspace member, or platform admin
+    post:
+      operationId: postV1WorkspacesWorkspaceIdCollectionsCollectionIdVersions
+      summary: Create a collection version
+      tags:
+        - Content
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+          csrfToken: []
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      workspace_id:
+                        type: string
+                      collection_id:
+                        type: string
+                      semver:
+                        type: string
+                      notes:
+                        type: string
+                        nullable: true
+                      folder_count:
+                        type: integer
+                      request_count:
+                        type: integer
+                      created_by:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                            nullable: true
+                          display_name:
+                            type: string
+                        required:
+                          - id
+                          - display_name
+                        additionalProperties: false
+                        nullable: true
+                      created_at:
+                        type: string
+                        format: date-time
+                      version:
+                        type: integer
+                      snapshot_json:
+                        type: string
+                    required:
+                      - id
+                      - workspace_id
+                      - collection_id
+                      - semver
+                      - notes
+                      - folder_count
+                      - request_count
+                      - created_by
+                      - created_at
+                      - version
+                      - snapshot_json
+                    additionalProperties: false
+                required:
+                  - version
+                additionalProperties: false
+        "400":
+          description: Invalid request (zod validation failed, malformed JSON, bad cursor)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Conflict / version_mismatch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      description: |-
+        Versions are immutable. The author (`created_by`) is the authenticated user; a client-sent `created_by` or `created_at` is ignored (the server's clock applies).
+
+        **Access:** workspace owner/admin/editor, or platform admin (viewers are read-only).
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                semver:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                notes:
+                  type: string
+                  maxLength: 65536
+                  nullable: true
+                snapshot_json:
+                  type: string
+                folder_count:
+                  type: integer
+                  minimum: 0
+                  maximum: 2000000000
+                  default: 0
+                request_count:
+                  type: integer
+                  minimum: 0
+                  maximum: 2000000000
+                  default: 0
+              required:
+                - semver
+                - snapshot_json
+              additionalProperties: false
+      x-access: workspace owner/admin/editor, or platform admin (viewers are read-only)
+  /v1/workspaces/{workspaceId}/collections/{collectionId}/versions/{versionId}:
+    get:
+      operationId: getV1WorkspacesWorkspaceIdCollectionsCollectionIdVersionsVersionId
+      summary: Get a collection version (with its snapshot)
+      tags:
+        - Content
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+          csrfToken: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      workspace_id:
+                        type: string
+                      collection_id:
+                        type: string
+                      semver:
+                        type: string
+                      notes:
+                        type: string
+                        nullable: true
+                      folder_count:
+                        type: integer
+                      request_count:
+                        type: integer
+                      created_by:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                            nullable: true
+                          display_name:
+                            type: string
+                        required:
+                          - id
+                          - display_name
+                        additionalProperties: false
+                        nullable: true
+                      created_at:
+                        type: string
+                        format: date-time
+                      version:
+                        type: integer
+                      snapshot_json:
+                        type: string
+                    required:
+                      - id
+                      - workspace_id
+                      - collection_id
+                      - semver
+                      - notes
+                      - folder_count
+                      - request_count
+                      - created_by
+                      - created_at
+                      - version
+                      - snapshot_json
+                    additionalProperties: false
+                required:
+                  - version
+                additionalProperties: false
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      description: "**Access:** any active workspace member, or platform admin."
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+        - name: versionId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+      x-access: any active workspace member, or platform admin
   /v1/workspaces/{workspaceId}/collections/{collectionId}/requests:
     get:
       operationId: getV1WorkspacesWorkspaceIdCollectionsCollectionIdRequests
@@ -6034,7 +6452,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-      description: Returns the sync `protocol_version` and `features` the server supports. Desktop builds that need sort_order, snapshot, collection versions and secret metadata require `protocol_version >= 2`. Extension features (folder_scripts, docs, collection_variables, globals) are only served to clients that declare them on each sync call (`features`); the optional `features` in this body is informational.
+      description: Returns the sync `protocol_version` and `features` the server supports. Desktop builds that need sort_order, snapshot, collection versions and secret metadata require `protocol_version >= 2`. Extension features (folder_scripts, docs, collection_variables, globals, version_authors) are only served to clients that declare them on each sync call (`features`); the optional `features` in this body is informational.
       requestBody:
         required: true
         content:
@@ -6191,7 +6609,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
       description: |-
-        Requires write access (editor or above): viewers get 403 `forbidden` with `details.reason = read_only`. Operations are applied in array order, each in its own transaction, and are idempotent by `operation_id` (a replay returns the original result). Existing resources need `base_version` equal to the server version, else the op is rejected with `reason: version_mismatch` (legacy `code: sync_conflict`) carrying `current_version` and `current_payload` so the client can merge. New resources use a client-generated `resource_id` and `base_version` 0. Other reasons: `not_found`, `invalid`, `too_large` (per-item caps: document_json 900000 bytes, names 200 chars (request names 500), snapshot_json 8000000 bytes), `id_in_use`, `duplicate_key`, `immutable` (collection_version updates). Secret variables are metadata only: `{key, value: null, is_secret: true}`; a secret with a value is `invalid`. The body limit for this route is larger than elsewhere (default 8 MiB, `SLINGER_SYNC_BODY_LIMIT_BYTES`); `base_checkpoint` is informational. Each push writes one audit summary entry (`sync.push`), not one per operation.
+        Requires write access (editor or above): viewers get 403 `forbidden` with `details.reason = read_only`. Operations are applied in array order, each in its own transaction, and are idempotent by `operation_id` (a replay returns the original result). Existing resources need `base_version` equal to the server version, else the op is rejected with `reason: version_mismatch` (legacy `code: sync_conflict`) carrying `current_version` and `current_payload` so the client can merge. New resources use a client-generated `resource_id` and `base_version` 0. Other reasons: `not_found`, `invalid`, `too_large` (per-item caps: document_json 900000 bytes, names 200 chars (request names 500), snapshot_json 8000000 bytes), `id_in_use`, `duplicate_key`, `immutable` (collection_version updates). Secret variables are metadata only: `{key, value: null, is_secret: true}`; a secret with a value is `invalid`. The body limit for this route is larger than elsewhere (default 8 MiB, `SLINGER_SYNC_BODY_LIMIT_BYTES`); `base_checkpoint` is informational. Each push writes one audit summary entry (`sync.push`), not one per operation. The author of a created `collection_version` is the authenticated user; a `created_by` in the payload is ignored.
 
         **Access:** workspace owner/admin/editor, or platform admin.
       parameters:
@@ -6390,7 +6808,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
       description: |-
-        Returns changes from every writer (desktop sync and dashboard/REST edits), ordered by strictly increasing checkpoint (`seq`). Secret variable values are masked (`value: null`). Use the returned `checkpoint` as the next `after_checkpoint`; a page holds at most `limit` operations and roughly 8 MiB of payload (`has_more` tells whether to continue). Every delete, including cascaded ones (folder/collection/environment deletes), has its own tombstone entry. Resource types and collection/folder fields of extension features the client did not declare in `features` are left out (the checkpoint still advances over them); the response repeats the server's `features`.
+        Returns changes from every writer (desktop sync and dashboard/REST edits), ordered by strictly increasing checkpoint (`seq`). Secret variable values are masked (`value: null`). Use the returned `checkpoint` as the next `after_checkpoint`; a page holds at most `limit` operations and roughly 8 MiB of payload (`has_more` tells whether to continue). Every delete, including cascaded ones (folder/collection/environment deletes), has its own tombstone entry. Resource types and collection/folder fields of extension features the client did not declare in `features` are left out (the checkpoint still advances over them), and a `collection_version` payload carries `created_by` ({id, display_name} or null for a version created before authors were recorded) only for clients declaring `version_authors`; the response repeats the server's `features`.
 
         **Access:** any active workspace member, or platform admin.
       parameters:
@@ -6429,7 +6847,7 @@ paths:
           schema:
             type: string
             maxLength: 1000
-            description: Comma separated extension features the client understands (folder_scripts, docs, collection_variables, globals)
+            description: Comma separated extension features the client understands (folder_scripts, docs, collection_variables, globals, version_authors)
       x-access: any active workspace member, or platform admin
   /v1/workspaces/{workspaceId}/sync/snapshot:
     get:
@@ -6524,7 +6942,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
       description: |-
-        Entities are returned in the order collection, environment, folder, request, environment_variable, collection_version (each by id) so parents precede children. `checkpoint` is read before the first page and repeated on every page through the opaque `cursor`; after the last page (`next_cursor: null`) the client sets its checkpoint to it and pulls: rows may be newer than `checkpoint` and the log replay is idempotent by version comparison. Secret values are masked (`value: null`). No tombstones. A page holds at most `limit` entities and roughly 8 MiB of payload. Extension types (collection_variable, global_variable, after collection_version) and collection/folder fields are included only for the features the client declares in `features`; the response repeats the server's `features`.
+        Entities are returned in the order collection, environment, folder, request, environment_variable, collection_version (each by id) so parents precede children. `checkpoint` is read before the first page and repeated on every page through the opaque `cursor`; after the last page (`next_cursor: null`) the client sets its checkpoint to it and pulls: rows may be newer than `checkpoint` and the log replay is idempotent by version comparison. Secret values are masked (`value: null`). No tombstones. A page holds at most `limit` entities and roughly 8 MiB of payload. Extension types (collection_variable, global_variable, after collection_version) and collection/folder fields are included only for the features the client declares in `features` (`created_by` of a `collection_version` needs `version_authors`); the response repeats the server's `features`.
 
         **Access:** any active workspace member, or platform admin.
       parameters:
@@ -6563,7 +6981,7 @@ paths:
           schema:
             type: string
             maxLength: 1000
-            description: Comma separated extension features the client understands (folder_scripts, docs, collection_variables, globals)
+            description: Comma separated extension features the client understands (folder_scripts, docs, collection_variables, globals, version_authors)
       x-access: any active workspace member, or platform admin
   /v1/workspaces/{workspaceId}/realtime/token:
     post:

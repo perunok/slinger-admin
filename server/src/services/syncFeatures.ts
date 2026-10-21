@@ -5,7 +5,7 @@ import type { SyncResourceType } from "./syncLog.js";
  * understands on every sync call (`features` query parameter on pull/snapshot, `features` array in the push body);
  * everything it did not declare is left out of what we return, so older clients see exactly the v2 wire they know.
  */
-export const EXTENSION_FEATURES = ["folder_scripts", "docs", "collection_variables", "globals"] as const;
+export const EXTENSION_FEATURES = ["folder_scripts", "docs", "collection_variables", "globals", "version_authors"] as const;
 export type ExtensionFeature = (typeof EXTENSION_FEATURES)[number];
 
 /** Resource types that only exist for clients declaring the feature. */
@@ -33,8 +33,19 @@ export function typeVisible(type: string, features: ReadonlySet<ExtensionFeature
   return !f || features.has(f);
 }
 
-/** The payload as a client with `features` sees it: undeclared collection/folder fields are removed. */
+/**
+ * The payload as a client with `features` sees it: undeclared collection/folder fields are removed, and a
+ * `collection_version` carries `created_by` only for clients declaring `version_authors` (`null` when the payload was
+ * logged before authors were recorded).
+ */
 export function shapePayload(type: string, payload: Record<string, unknown>, features: ReadonlySet<ExtensionFeature>): Record<string, unknown> {
+  if (type === "collection_version") {
+    // Tombstones have an empty payload and stay empty.
+    if (features.has("version_authors")) return "created_by" in payload || !("semver" in payload) ? payload : { ...payload, created_by: null };
+    if (!("created_by" in payload)) return payload;
+    const { created_by: _author, ...rest } = payload;
+    return rest;
+  }
   if (type !== "collection" && type !== "folder") return payload;
   let out: Record<string, unknown> | null = null;
   for (const [field, feature] of Object.entries(FIELD_FEATURE)) {

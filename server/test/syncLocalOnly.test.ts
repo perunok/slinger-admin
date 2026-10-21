@@ -71,7 +71,7 @@ describe("capabilities", () => {
   it("register, pull and snapshot advertise the extension features", async () => {
     const w = await setup();
     const reg = j(await call(app, { method: "POST", url: "/v1/sync/clients/register", as: w.owner, body: {} }));
-    const expected = ["folder_scripts", "docs", "collection_variables", "globals"];
+    const expected = ["folder_scripts", "docs", "collection_variables", "globals", "version_authors"];
     expect(reg.features).toEqual(expect.arrayContaining(expected));
     expect((await pull(w, null)).features).toEqual(expect.arrayContaining(expected));
     expect((await snapshot(w, null)).features).toEqual(expect.arrayContaining(expected));

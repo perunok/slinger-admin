@@ -67,16 +67,17 @@ model User {
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
 
-  memberships      Membership[]
-  sessions         Session[]
-  refreshTokens    RefreshToken[]
-  invitesSent      Invite[]       @relation("InviteSender")
-  membershipsAdded Membership[]   @relation("MembershipAddedBy")
-  joinRequests     JoinRequest[]
-  auditLogs        AuditLog[]
-  deviceFlows      DeviceFlow[]
-  ownedWorkspaces  Workspace[]    @relation("WorkspaceOwner")
-  syncClients      SyncClient[]
+  memberships               Membership[]
+  sessions                  Session[]
+  refreshTokens             RefreshToken[]
+  invitesSent               Invite[]            @relation("InviteSender")
+  membershipsAdded          Membership[]        @relation("MembershipAddedBy")
+  joinRequests              JoinRequest[]
+  auditLogs                 AuditLog[]
+  deviceFlows               DeviceFlow[]
+  ownedWorkspaces           Workspace[]         @relation("WorkspaceOwner")
+  syncClients               SyncClient[]
+  collectionVersionsCreated CollectionVersion[] @relation("CollectionVersionAuthor")
 
   @@map("users")
 }
@@ -266,21 +267,28 @@ model Collection {
 // Immutable snapshot of a collection (synced from the desktop's collection_versions). Never updated after
 // creation: `version` stays 1 and exists only so it fits the generic optimistic-concurrency/sync machinery.
 model CollectionVersion {
-  id           String     @id @default(uuid())
-  workspaceId  String
-  workspace    Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  collectionId String
-  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
-  semver       String
-  notes        String?
-  snapshotJson String
-  folderCount  Int        @default(0)
-  requestCount Int        @default(0)
-  createdAt    DateTime   @default(now())
-  version      Int        @default(1)
+  id              String     @id @default(uuid())
+  workspaceId     String
+  workspace       Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  collectionId    String
+  collection      Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  semver          String
+  notes           String?
+  snapshotJson    String
+  folderCount     Int        @default(0)
+  requestCount    Int        @default(0)
+  createdAt       DateTime   @default(now())
+  version         Int        @default(1)
+  /// The user who created the version (derived from the auth context, never client-supplied). Null for versions
+  /// created before authors were recorded, or after the account was deleted (then `createdByName` is kept).
+  createdByUserId String?
+  createdBy       User?      @relation("CollectionVersionAuthor", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  /// Display name at creation, so it survives renames and account deletion. Null = unknown (legacy version).
+  createdByName   String?
 
   @@unique([collectionId, semver])
   @@index([workspaceId])
+  @@index([createdByUserId])
   @@map("collection_versions")
 }
 

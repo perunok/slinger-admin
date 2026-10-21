@@ -3,6 +3,7 @@ import type {
 } from "@prisma/client";
 import { z } from "zod";
 import { AppError } from "../lib/errors.js";
+import { versionAuthor } from "../lib/dto.js";
 import { newId } from "../lib/ids.js";
 import { encryptSecret } from "../lib/crypto.js";
 import { assertVersionIfGiven, ensureUpdated } from "../lib/versioned.js";
@@ -16,7 +17,11 @@ export type WriteCtx = {
   operationId?: string;
   baseVersion?: number;
   occurredAt?: Date;
+  /** The authenticated user performing the write; recorded as the author of a created collection version. */
+  actor?: Actor;
 };
+/** Who performs a write (taken from the auth context, never from a request body). */
+export type Actor = { id: string; displayName: string };
 
 // ---------------------------------------------------------------- input schemas
 // Caps mirror the desktop's quarantine thresholds (docs/SYNC_DESIGN.md sections 3 and 14/S9): an item the desktop
@@ -179,7 +184,8 @@ export function syncPayload(type: SyncResourceType, row: unknown): Record<string
       const c = row as CollectionVersion;
       return {
         collection_id: c.collectionId, semver: c.semver, notes: c.notes, snapshot_json: c.snapshotJson,
-        folder_count: c.folderCount, request_count: c.requestCount, created_at: c.createdAt.toISOString()
+        folder_count: c.folderCount, request_count: c.requestCount, created_at: c.createdAt.toISOString(),
+        created_by: versionAuthor(c)
       };
     }
     case "collection_variable": {
@@ -523,10 +529,14 @@ export async function createCollectionVersion(tx: Tx, wsId: string, id: string, 
   if (clash) {
     throw new AppError("conflict", `version ${d.semver} already exists for this collection`, { reason: "duplicate_key", existing_resource_id: clash.id });
   }
+  // A sync push of an offline-created version carries its own time; the server's clock caps it (the author is
+  // server-attested, so the time next to it must not claim the future or pin the version to the top of the list).
+  const createdAt = d.created_at ? new Date(Math.min(Date.parse(d.created_at), Date.now())) : null;
   const row = await tx.collectionVersion.create({
     data: {
       id, workspaceId: wsId, collectionId: col.id, semver: d.semver, notes: d.notes ?? null, snapshotJson: d.snapshot_json,
-      folderCount: d.folder_count, requestCount: d.request_count, ...(d.created_at && { createdAt: new Date(d.created_at) })
+      folderCount: d.folder_count, requestCount: d.request_count, ...(createdAt && !Number.isNaN(createdAt.getTime()) && { createdAt }),
+      createdByUserId: ctx?.actor?.id ?? null, createdByName: ctx?.actor?.displayName ?? null
     }
   });
   await log(tx, wsId, "collection_version", row, "upsert", ctx);

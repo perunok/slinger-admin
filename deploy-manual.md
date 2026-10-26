@@ -116,5 +116,12 @@ Database data lives in the `postgres-data` volume; Caddy certificates in `caddy-
 ## Notes
 
 - Logs: `docker compose logs -f server` (structured JSON; authorization headers, cookies and secrets are never logged).
+  Each container keeps at most `SLINGER_LOG_MAX_FILES` (5) log files of `SLINGER_LOG_MAX_SIZE` (10m), so logs never fill
+  the disk; the cap applies when a container is created (`docker compose up -d` after updating `docker-compose.yml`).
+- Disk space: a full disk makes every request that writes (sign-in, token refresh, sync) fail with `internal server error`.
+  Check with `df -h /`; other containers on the same machine can be the cause (`sudo du -xh --max-depth=2 / | sort -h | tail`,
+  and `ls -s /var/lib/docker/containers/*/*-json.log` for container logs without a cap). Docker's own default for every
+  container can be set in `/etc/docker/daemon.json`: `{"log-driver": "json-file", "log-opts": {"max-size": "10m", "max-file": "5"}}`
+  (restart Docker and recreate the containers to apply it).
 - Backups: `docker compose exec postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql`.
 - There is no Redis, worker or realtime service in this stack; the server only issues realtime/collab tokens.

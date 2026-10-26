@@ -6452,7 +6452,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-      description: Returns the sync `protocol_version` and `features` the server supports. Desktop builds that need sort_order, snapshot, collection versions and secret metadata require `protocol_version >= 2`. Extension features (folder_scripts, docs, collection_variables, globals, version_authors) are only served to clients that declare them on each sync call (`features`); the optional `features` in this body is informational.
+      description: Returns the sync `protocol_version` and `features` the server supports. Desktop builds that need sort_order, snapshot, collection versions and secret metadata require `protocol_version >= 2`. Extension features (folder_scripts, docs, collection_variables, globals, version_authors, container_auth) are only served to clients that declare them on each sync call (`features`); the optional `features` in this body is informational.
       requestBody:
         required: true
         content:
@@ -6847,7 +6847,7 @@ paths:
           schema:
             type: string
             maxLength: 1000
-            description: Comma separated extension features the client understands (folder_scripts, docs, collection_variables, globals, version_authors)
+            description: Comma separated extension features the client understands (folder_scripts, docs, collection_variables, globals, version_authors, container_auth)
       x-access: any active workspace member, or platform admin
   /v1/workspaces/{workspaceId}/sync/snapshot:
     get:
@@ -6981,7 +6981,7 @@ paths:
           schema:
             type: string
             maxLength: 1000
-            description: Comma separated extension features the client understands (folder_scripts, docs, collection_variables, globals, version_authors)
+            description: Comma separated extension features the client understands (folder_scripts, docs, collection_variables, globals, version_authors, container_auth)
       x-access: any active workspace member, or platform admin
   /v1/workspaces/{workspaceId}/realtime/token:
     post:

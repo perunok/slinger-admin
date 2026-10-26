@@ -33,6 +33,8 @@ export const SNAPSHOT_JSON_MAX_BYTES = 8_000_000;
 /** Collection/folder scripts and documentation (sync features `folder_scripts`, `docs`): the desktop's own input caps. */
 export const SCRIPTS_JSON_MAX_BYTES = 2 * 1024 * 1024;
 export const DESCRIPTION_MAX_BYTES = 2 * 1024 * 1024;
+/** Collection/folder auth (feature `container_auth`): the desktop's own input cap. */
+export const AUTH_JSON_MAX_BYTES = 1024 * 1024;
 /** Collection variables and globals (sync features `collection_variables`, `globals`): the desktop's own input caps. */
 export const SYNC_VAR_KEY_MAX = 256;
 export const SYNC_VAR_VALUE_MAX = 1_000_000;
@@ -83,6 +85,22 @@ const scriptsJson = z
     if (!Array.isArray(v)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "scripts_json must be a JSON array (Postman event list)" });
   })
   .nullable();
+/** Postman `auth` object as JSON text (collection/folder auth), or null for none set. */
+const authJson = z
+  .string()
+  .superRefine(maxBytes(AUTH_JSON_MAX_BYTES, "auth_json"))
+  .superRefine((s, ctx) => {
+    let v: unknown;
+    try {
+      v = JSON.parse(s);
+    } catch {
+      /* reported below */
+    }
+    if (!v || typeof v !== "object" || Array.isArray(v) || typeof (v as { type?: unknown }).type !== "string") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "auth_json must be a JSON object with a string type (Postman auth)" });
+    }
+  })
+  .nullable();
 const descriptionText = z.string().superRefine(maxBytes(DESCRIPTION_MAX_BYTES, "description")).nullable();
 const descriptionType = z.enum(["text/markdown", "text/plain"]).nullable();
 /**
@@ -92,15 +110,17 @@ const descriptionType = z.enum(["text/markdown", "text/plain"]).nullable();
 const containerExtras = {
   scripts_json: scriptsJson.optional(),
   description: descriptionText.optional(),
-  description_type: descriptionType.optional()
+  description_type: descriptionType.optional(),
+  auth_json: authJson.optional()
 };
 export const syncCollectionData = collectionData.extend(containerExtras);
 export const syncFolderData = folderData.extend(containerExtras);
-type ContainerExtras = { scripts_json?: string | null; description?: string | null; description_type?: string | null };
+type ContainerExtras = { scripts_json?: string | null; description?: string | null; description_type?: string | null; auth_json?: string | null };
 const extrasData = (d: ContainerExtras) => ({
   ...(d.scripts_json !== undefined && { scriptsJson: d.scripts_json }),
   ...(d.description !== undefined && { description: d.description }),
-  ...(d.description_type !== undefined && { descriptionType: d.description_type })
+  ...(d.description_type !== undefined && { descriptionType: d.description_type }),
+  ...(d.auth_json !== undefined && { authJson: d.auth_json })
 });
 
 /** Collection variables and globals: arbitrary names like Postman's (not the environment-variable key pattern). */
@@ -157,7 +177,7 @@ export function syncPayload(type: SyncResourceType, row: unknown): Record<string
   switch (type) {
     case "collection": {
       const c = row as Collection;
-      return { name: c.name, scripts_json: c.scriptsJson, description: c.description, description_type: c.descriptionType };
+      return { name: c.name, scripts_json: c.scriptsJson, description: c.description, description_type: c.descriptionType, auth_json: c.authJson };
     }
     case "environment":
       return { name: (row as Environment).name };
@@ -165,7 +185,7 @@ export function syncPayload(type: SyncResourceType, row: unknown): Record<string
       const f = row as Folder;
       return {
         collection_id: f.collectionId, parent_folder_id: f.parentFolderId, name: f.name, sort_order: f.sortOrder,
-        scripts_json: f.scriptsJson, description: f.description, description_type: f.descriptionType
+        scripts_json: f.scriptsJson, description: f.description, description_type: f.descriptionType, auth_json: f.authJson
       };
     }
     case "request": {

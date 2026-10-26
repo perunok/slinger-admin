@@ -149,7 +149,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       body: deviceStartBody,
       responses: { 200: deviceStartResponse },
       errors: [400, 429],
-      config: { rateLimit: { max: 30, timeWindow: 5 * 60_000, keyGenerator: (r: FastifyRequest) => `dstart|${r.ip}` } },
+      config: { rateLimit: { max: cfg.deviceStartRateMax, timeWindow: 5 * 60_000, keyGenerator: (r: FastifyRequest) => `dstart|${r.ip}` } },
       handler: async ({ body }) => {
         const deviceCode = `dc_${randomToken(32)}`;
         let userCode = generateUserCode();

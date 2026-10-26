@@ -142,6 +142,10 @@ Authoritative design: `slinger/docs/SYNC_DESIGN.md` section 14. Server details a
   `code` values are unchanged. Push body limit is 8 MiB (`SLINGER_SYNC_BODY_LIMIT_BYTES`); over it -> `413` with `details.reason = "too_large"`.
 - **Viewer push**: `403 workspace_access_denied` with `details.reason = "read_only"`; each push writes one `sync.push` audit row (summary only).
 - **New endpoint** `GET /v1/workspaces/{workspaceId}/sync/snapshot?client_id&cursor&limit` (viewer+): `{checkpoint, entities:[{resource_type, resource_id, version, payload}], next_cursor}`.
+  Entities come parents first: by type (collection, environment, folder, request, ...) and, within folders, by depth from the
+  collection root, then id, so a nested folder never precedes its parent folder (older servers ordered folders by id
+  only; clients must still tolerate an out-of-order folder, see `slinger/docs/SYNC_DESIGN.md` section 20). The cursor is
+  opaque; a folder cursor issued by an older server restarts the folders (re-sent entities are idempotent by version).
 - **Rate limit**: sync endpoints are limited per user (default 120/min) -> `429` + `Retry-After`.
 - **Pull**: unchanged shape; pages are additionally capped at ~8 MiB of payload (`has_more` set), and log entries written before v2 lack `sort_order`.
 
@@ -183,3 +187,17 @@ Authoritative design: `slinger/docs/SYNC_DESIGN.md` section 21; server details i
 - **Time**: a sync push may carry `created_at` (a version made offline keeps its own time), but the server caps it at its own
   clock (`min(created_at, now)`); an unparsable value is refused like any invalid payload.
 - Migration `version_authors`.
+
+### Extension: collection and folder auth (`container_auth`, Slinger Cloud 0.5.0, additive, protocol version stays 2)
+
+Authoritative design: `slinger/docs/SYNC_DESIGN.md` section 21.6.
+
+- **Feature** `container_auth` is added to the register `features` and to every pull/snapshot answer; declared like the others.
+- **Field** `auth_json` on `collection` and `folder` payloads: the Postman `auth` object as JSON text (an object with a string
+  `type`, <= 1048576 bytes) or null. On a folder null = inherit from the parent folder / collection and `{"type":"noauth"}` =
+  no auth; on a collection null = no auth. Requests whose own `auth` (in `document_json`) is absent/null inherit it on the
+  desktop at send time. Absent in a push = unchanged; stripped from pull, snapshot and `current_payload` for clients that did
+  not declare the feature, so older desktops never see or wipe it.
+- **Storage**: nullable `collections.authJson` / `folders.authJson`, stored as sent, exactly like `document_json` (the desktop never
+  sends an OAuth 2.0 token; secret variable values never reach the server). Migration `container_auth`.
+- No REST content endpoints for it (sync only), like scripts and docs.

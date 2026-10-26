@@ -410,6 +410,40 @@ describe("snapshot", () => {
     expect((await call(app, { method: "GET", url: `${w.base}/snapshot?client_id=${w.client}&limit=501`, as: w.owner })).statusCode).toBe(400);
   });
 
+  it("sends folders parent-first even when a parent's id sorts after its child's, with a stable cursor across page sizes", async () => {
+    const w = await setup();
+    const wid = w.ws.id;
+    const col = newId();
+    await prisma.collection.create({ data: { id: col, workspaceId: wid, name: "c" } });
+    // ids chosen so that every child sorts BEFORE its parent: id order alone would be leaf-first
+    const ids = ["f", "e", "d", "c", "b", "a"].map((p) => `${p}${newId().slice(1)}`); // unique per run, first character fixes the order
+    const parentOf: Record<string, string | null> = { [ids[0]!]: null, [ids[1]!]: ids[0]!, [ids[2]!]: ids[1]!, [ids[3]!]: ids[2]!, [ids[4]!]: ids[0]!, [ids[5]!]: null };
+    for (const id of ids) {
+      await prisma.folder.create({ data: { id, workspaceId: wid, collectionId: col, parentFolderId: parentOf[id], name: id.slice(0, 4) } });
+    }
+    await prisma.request.create({ data: { id: newId(), workspaceId: wid, collectionId: col, folderId: ids[3]!, name: "deep", method: "GET", url: "https://x.test", documentJson: "{}" } });
+    const seqs: string[][] = [];
+    for (const limit of [1, 2, 3, 500]) {
+      const all = await pages(w, w.owner, w.client, limit);
+      const folders = all.entities.filter((e) => e.resource_type === "folder");
+      expect(folders).toHaveLength(ids.length);
+      const seen = new Set<string>();
+      for (const f of folders) {
+        const parent = f.payload.parent_folder_id as string | null;
+        if (parent) expect(seen.has(parent), `${f.resource_id} before its parent ${parent}`).toBe(true);
+        seen.add(f.resource_id);
+      }
+      seqs.push(all.entities.map((e) => e.resource_id));
+    }
+    for (const s of seqs) expect(s).toEqual(seqs[0]);
+    // depth 0 (by id), then depth 1, 2, 3
+    expect(seqs[0]!.filter((id) => ids.includes(id))).toEqual([ids[5], ids[0], ids[4], ids[1], ids[2], ids[3]]);
+    // a folder cursor from before this ordering (plain id, no depth) restarts the folders instead of skipping any
+    const legacy = Buffer.from(JSON.stringify({ c: 0, t: 2, a: ids[2] })).toString("base64url");
+    const restarted = j(await call(app, { method: "GET", url: `${w.base}/snapshot?client_id=${w.client}&limit=500&cursor=${legacy}`, as: w.owner }));
+    expect(restarted.entities.filter((e: { resource_type: string }) => e.resource_type === "folder")).toHaveLength(ids.length);
+  });
+
   it("writes during the download are replayed by the pull from the snapshot checkpoint (idempotent by version)", async () => {
     const w = await setup();
     const [c1, c2, c3] = [newId(), newId(), newId()];

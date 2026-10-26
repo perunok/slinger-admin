@@ -64,6 +64,7 @@ All variables are validated with zod at startup; **every** problem is reported i
 | `SLINGER_SESSION_TTL` | `604800` | dashboard session/cookie lifetime, seconds |
 | `SLINGER_DEVICE_FLOW_TTL` | `600` | device login code lifetime, seconds |
 | `SLINGER_LOGIN_RATE_MAX` / `SLINGER_LOGIN_RATE_WINDOW_SECONDS` | `10` / `300` | per **IP + email** budget for credential endpoints, then `429 rate_limited` |
+| `SLINGER_DEVICE_START_RATE_MAX` | `30` | desktop device-login starts per IP per 5 minutes, then `429` |
 | `SLINGER_RATE_LIMIT_STORE` | `memory` | where those counters live: `memory` (per process) or `postgres` (shared by every instance through the existing database, table `rate_limit_buckets`, no Redis needed). Set `postgres` as soon as you run more than one server instance. |
 | `SLINGER_LOG_LEVEL` | `info` | pino level. Authorization/Cookie/CSRF headers are redacted; query strings are not logged. |
 | `SLINGER_DASHBOARD_DIR` | unset | Built admin dashboard (`admin-dashboard/dist`, must contain `index.html`) served at `/` with its own CSP and caching; the server answers `/runtime-config.js` itself (API prefix `/api`). The Docker image sets it to `/app/dashboard`. Unset: API only. |
@@ -93,7 +94,7 @@ between runs. Every JSON response is additionally validated against its declared
 (`validateResponses`), which keeps `openapi.yaml` honest. Coverage includes: owner-vs-platform-admin boundaries, viewer blocked
 from every write incl. sync push, cross-workspace IDOR (404s), adding members (existing account / pending until the account exists / claimed at sign-in), `version_mismatch`, CSRF (cookie vs
 Bearer), login rate limiting, CORS allowlist, request-id propagation, body cap, secret masking, cursor pagination on every
-list, audit-log writes, sync push/pull (incl. tombstones for cascaded folder/collection/environment deletes), sync v2 (`test/syncV2.test.ts`: sort_order, request moves, secret metadata, collection versions, snapshot with ~2k entities, limits, idempotent replays, two-client convergence, role matrix and cross-workspace IDOR), sync extensions (`test/syncLocalOnly.test.ts`: scripts/docs, collection variables, globals, per-client shaping, caps, duplicate keys, cascades, secret metadata, roles, IDOR), version authors (`test/versionAuthors.test.ts`: author via sync push and REST, per-client shaping, forged `created_by`, rename/account deletion, legacy rows), admin routes (incl. a disabled user's sessions,
+list, audit-log writes, sync push/pull (incl. tombstones for cascaded folder/collection/environment deletes), sync v2 (`test/syncV2.test.ts`: sort_order, request moves, secret metadata, collection versions, snapshot with ~2k entities and parent-first folders, limits, idempotent replays, two-client convergence, role matrix and cross-workspace IDOR), sync extensions (`test/syncLocalOnly.test.ts`: scripts/docs, collection variables, globals, per-client shaping, caps, duplicate keys, cascades, secret metadata, roles, IDOR), version authors (`test/versionAuthors.test.ts`: author via sync push and REST, per-client shaping, forged `created_by`, rename/account deletion, legacy rows), admin routes (incl. a disabled user's sessions,
 access tokens and refresh tokens being rejected, and the 503 health body), hosts + DNS verification, the Postgres-backed rate limit
 store shared by two app instances, bootstrap validation and production config failures, password change/reset and `must_change_password`
 (`test/account.test.ts`: session/token revocation, forced-change route gate, device-flow refusal, rate limit), default role for join requests.
@@ -370,15 +371,15 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 Server side of `slinger/docs/SYNC_DESIGN.md` (section 14). Everything is additive: v1 clients keep working (they ignore `reason`,
 `current_payload`, `sort_order`, ...). Register (`POST /v1/sync/clients/register`) answers `protocol_version: 2` and
 `features: ["sort_order","snapshot","collection_version","secret_metadata","op_reasons","request_move","folder_scripts","docs",
-"collection_variables","globals","version_authors"]`; a desktop that needs them must refuse to sync against a server that does not advertise
-`protocol_version >= 2`. The last five are the additive extensions below ("Extensions"): they are served only to clients that
+"collection_variables","globals","version_authors","container_auth"]`; a desktop that needs them must refuse to sync against a server that does not advertise
+`protocol_version >= 2`. The last six are the additive extensions below ("Extensions"): they are served only to clients that
 declare them.
 
 **Wire payloads** (identical in pull, snapshot and `current_payload`):
 
 | resource_type | payload |
 |---|---|
-| `collection` | `{name}` + `{scripts_json}` (feature `folder_scripts`) + `{description, description_type}` (feature `docs`) |
+| `collection` | `{name}` + `{scripts_json}` (feature `folder_scripts`) + `{description, description_type}` (feature `docs`) + `{auth_json}` (feature `container_auth`) |
 | `environment` | `{name}` |
 | `folder` | `{collection_id, parent_folder_id, name, sort_order}` + the same extension fields as a collection |
 | `request` | `{collection_id, folder_id, name, method, url, document_json, sort_order}` |
@@ -435,7 +436,8 @@ newer than `checkpoint` (writes during the download); after the last page the cl
 operations whose `resulting_version` is newer than what it holds. No tombstones.
 
 **Extensions** (slinger `docs/SYNC_DESIGN.md` section 21; additive, protocol stays 2): collection/folder scripts and docs, collection
-variables, workspace globals, version authors.
+variables, workspace globals, version authors, collection/folder auth (`container_auth`: field `auth_json`, a Postman `auth`
+object as JSON text or null, <= 1 MiB, stored as sent like `document_json`).
 - *Declaration*: the client lists the extension features it understands on every call: `features=a,b` query parameter on pull and
   snapshot, `features: [...]` in the push body (optional and informational in the register body). Resource types of undeclared
   features are left out of pull pages (the checkpoint still advances over them) and snapshots; undeclared collection/folder fields

@@ -187,3 +187,17 @@ Authoritative design: `slinger/docs/SYNC_DESIGN.md` section 21; server details i
 - **Time**: a sync push may carry `created_at` (a version made offline keeps its own time), but the server caps it at its own
   clock (`min(created_at, now)`); an unparsable value is refused like any invalid payload.
 - Migration `version_authors`.
+
+### Extension: collection and folder auth (`container_auth`, Slinger Cloud 0.5.0, additive, protocol version stays 2)
+
+Authoritative design: `slinger/docs/SYNC_DESIGN.md` section 21.6.
+
+- **Feature** `container_auth` is added to the register `features` and to every pull/snapshot answer; declared like the others.
+- **Field** `auth_json` on `collection` and `folder` payloads: the Postman `auth` object as JSON text (an object with a string
+  `type`, <= 1048576 bytes) or null. On a folder null = inherit from the parent folder / collection and `{"type":"noauth"}` =
+  no auth; on a collection null = no auth. Requests whose own `auth` (in `document_json`) is absent/null inherit it on the
+  desktop at send time. Absent in a push = unchanged; stripped from pull, snapshot and `current_payload` for clients that did
+  not declare the feature, so older desktops never see or wipe it.
+- **Storage**: nullable `collections.authJson` / `folders.authJson`, stored as sent, exactly like `document_json` (the desktop never
+  sends an OAuth 2.0 token; secret variable values never reach the server). Migration `container_auth`.
+- No REST content endpoints for it (sync only), like scripts and docs.

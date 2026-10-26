@@ -5,7 +5,7 @@ import type { SyncResourceType } from "./syncLog.js";
  * understands on every sync call (`features` query parameter on pull/snapshot, `features` array in the push body);
  * everything it did not declare is left out of what we return, so older clients see exactly the v2 wire they know.
  */
-export const EXTENSION_FEATURES = ["folder_scripts", "docs", "collection_variables", "globals", "version_authors"] as const;
+export const EXTENSION_FEATURES = ["folder_scripts", "docs", "collection_variables", "globals", "version_authors", "container_auth"] as const;
 export type ExtensionFeature = (typeof EXTENSION_FEATURES)[number];
 
 /** Resource types that only exist for clients declaring the feature. */
@@ -17,7 +17,8 @@ const TYPE_FEATURE: Partial<Record<SyncResourceType, ExtensionFeature>> = {
 const FIELD_FEATURE: Record<string, ExtensionFeature> = {
   scripts_json: "folder_scripts",
   description: "docs",
-  description_type: "docs"
+  description_type: "docs",
+  auth_json: "container_auth"
 };
 
 /** Parses a declaration (comma separated string or array); unknown names are ignored. */

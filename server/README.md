@@ -370,15 +370,15 @@ Generated from the registered routes (authoritative schemas: `openapi.yaml`). "a
 Server side of `slinger/docs/SYNC_DESIGN.md` (section 14). Everything is additive: v1 clients keep working (they ignore `reason`,
 `current_payload`, `sort_order`, ...). Register (`POST /v1/sync/clients/register`) answers `protocol_version: 2` and
 `features: ["sort_order","snapshot","collection_version","secret_metadata","op_reasons","request_move","folder_scripts","docs",
-"collection_variables","globals","version_authors"]`; a desktop that needs them must refuse to sync against a server that does not advertise
-`protocol_version >= 2`. The last five are the additive extensions below ("Extensions"): they are served only to clients that
+"collection_variables","globals","version_authors","container_auth"]`; a desktop that needs them must refuse to sync against a server that does not advertise
+`protocol_version >= 2`. The last six are the additive extensions below ("Extensions"): they are served only to clients that
 declare them.
 
 **Wire payloads** (identical in pull, snapshot and `current_payload`):
 
 | resource_type | payload |
 |---|---|
-| `collection` | `{name}` + `{scripts_json}` (feature `folder_scripts`) + `{description, description_type}` (feature `docs`) |
+| `collection` | `{name}` + `{scripts_json}` (feature `folder_scripts`) + `{description, description_type}` (feature `docs`) + `{auth_json}` (feature `container_auth`) |
 | `environment` | `{name}` |
 | `folder` | `{collection_id, parent_folder_id, name, sort_order}` + the same extension fields as a collection |
 | `request` | `{collection_id, folder_id, name, method, url, document_json, sort_order}` |
@@ -435,7 +435,8 @@ newer than `checkpoint` (writes during the download); after the last page the cl
 operations whose `resulting_version` is newer than what it holds. No tombstones.
 
 **Extensions** (slinger `docs/SYNC_DESIGN.md` section 21; additive, protocol stays 2): collection/folder scripts and docs, collection
-variables, workspace globals, version authors.
+variables, workspace globals, version authors, collection/folder auth (`container_auth`: field `auth_json`, a Postman `auth`
+object as JSON text or null, <= 1 MiB, stored as sent like `document_json`).
 - *Declaration*: the client lists the extension features it understands on every call: `features=a,b` query parameter on pull and
   snapshot, `features: [...]` in the push body (optional and informational in the register body). Resource types of undeclared
   features are left out of pull pages (the checkpoint still advances over them) and snapshots; undeclared collection/folder fields

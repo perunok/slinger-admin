@@ -22,7 +22,7 @@ export const SYNC_FEATURES = [
 ] as const;
 /** Declaration of the extension features a client understands (see services/syncFeatures.ts). */
 const featureList = z.array(z.string().max(64)).max(50);
-const featureQuery = z.string().max(1000).optional().describe("Comma separated extension features the client understands (folder_scripts, docs, collection_variables, globals, version_authors)");
+const featureQuery = z.string().max(1000).optional().describe("Comma separated extension features the client understands (folder_scripts, docs, collection_variables, globals, version_authors, container_auth)");
 
 const operationSchema = z.object({
   operation_id: id,
@@ -158,7 +158,7 @@ export function registerSyncRoutes(app: FastifyInstance): void {
     description:
       "Returns the sync `protocol_version` and `features` the server supports. Desktop builds that need sort_order, " +
       "snapshot, collection versions and secret metadata require `protocol_version >= 2`. Extension features " +
-      "(folder_scripts, docs, collection_variables, globals, version_authors) are only served to clients that declare them on each sync call " +
+      "(folder_scripts, docs, collection_variables, globals, version_authors, container_auth) are only served to clients that declare them on each sync call " +
       "(`features`); the optional `features` in this body is informational.",
     tags: ["Sync"],
     auth: "user",

@@ -250,6 +250,9 @@ model Collection {
   scriptsJson     String?
   description     String?
   descriptionType String?
+  // Collection-level auth (Postman `auth` object as JSON text; sync feature `container_auth`), inherited by requests
+  // without their own. NULL = none. Stored like request documents: the desktop never sends an OAuth 2.0 token.
+  authJson        String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
   version         Int       @default(1)
@@ -307,6 +310,8 @@ model Folder {
   scriptsJson     String?
   description     String?
   descriptionType String?
+  // Folder auth (see Collection); NULL = inherit from the parent, {"type":"noauth"} = none.
+  authJson        String?
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
   version         Int        @default(1)

@@ -64,6 +64,7 @@ All variables are validated with zod at startup; **every** problem is reported i
 | `SLINGER_SESSION_TTL` | `604800` | dashboard session/cookie lifetime, seconds |
 | `SLINGER_DEVICE_FLOW_TTL` | `600` | device login code lifetime, seconds |
 | `SLINGER_LOGIN_RATE_MAX` / `SLINGER_LOGIN_RATE_WINDOW_SECONDS` | `10` / `300` | per **IP + email** budget for credential endpoints, then `429 rate_limited` |
+| `SLINGER_DEVICE_START_RATE_MAX` | `30` | desktop device-login starts per IP per 5 minutes, then `429` |
 | `SLINGER_RATE_LIMIT_STORE` | `memory` | where those counters live: `memory` (per process) or `postgres` (shared by every instance through the existing database, table `rate_limit_buckets`, no Redis needed). Set `postgres` as soon as you run more than one server instance. |
 | `SLINGER_LOG_LEVEL` | `info` | pino level. Authorization/Cookie/CSRF headers are redacted; query strings are not logged. |
 | `SLINGER_DASHBOARD_DIR` | unset | Built admin dashboard (`admin-dashboard/dist`, must contain `index.html`) served at `/` with its own CSP and caching; the server answers `/runtime-config.js` itself (API prefix `/api`). The Docker image sets it to `/app/dashboard`. Unset: API only. |

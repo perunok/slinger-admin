@@ -142,6 +142,10 @@ Authoritative design: `slinger/docs/SYNC_DESIGN.md` section 14. Server details a
   `code` values are unchanged. Push body limit is 8 MiB (`SLINGER_SYNC_BODY_LIMIT_BYTES`); over it -> `413` with `details.reason = "too_large"`.
 - **Viewer push**: `403 workspace_access_denied` with `details.reason = "read_only"`; each push writes one `sync.push` audit row (summary only).
 - **New endpoint** `GET /v1/workspaces/{workspaceId}/sync/snapshot?client_id&cursor&limit` (viewer+): `{checkpoint, entities:[{resource_type, resource_id, version, payload}], next_cursor}`.
+  Entities come parents first: by type (collection, environment, folder, request, ...) and, within folders, by depth from the
+  collection root, then id, so a nested folder never precedes its parent folder (older servers ordered folders by id
+  only; clients must still tolerate an out-of-order folder, see `slinger/docs/SYNC_DESIGN.md` section 20). The cursor is
+  opaque; a folder cursor issued by an older server restarts the folders (re-sent entities are idempotent by version).
 - **Rate limit**: sync endpoints are limited per user (default 120/min) -> `429` + `Retry-After`.
 - **Pull**: unchanged shape; pages are additionally capped at ~8 MiB of payload (`has_more` set), and log entries written before v2 lack `sort_order`.
 

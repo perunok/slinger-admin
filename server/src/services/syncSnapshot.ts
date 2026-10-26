@@ -37,7 +37,7 @@ function decodeCursor(raw: string): Cursor {
     const v = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as Partial<Cursor>;
     if (
       Number.isInteger(v.c) && v.c! >= 0 && Number.isInteger(v.t) && v.t! >= 0 && v.t! < SNAPSHOT_ORDER.length &&
-      typeof v.a === "string" && v.a.length <= 64
+      typeof v.a === "string" && v.a.length <= 96
     ) {
       return { c: v.c!, t: v.t!, a: v.a };
     }
@@ -48,13 +48,51 @@ function decodeCursor(raw: string): Cursor {
 }
 
 type Row = { id: string; version: number };
-async function fetchRows(db: PrismaClient, wsId: string, type: SyncResourceType, after: string, take: number): Promise<Row[]> {
+
+/**
+ * Folders go parent-first: ordered by (depth, id), where depth is the distance from the collection root. Ordering by id
+ * alone would send a nested folder before its parent whenever the parent's id sorts later, and a client applying page
+ * by page has nowhere to put it. The folder cursor position is `"<depth>:<id>"` (keyset on both columns, so it stays
+ * stable across pages); a position without the depth (a cursor issued before this ordering) restarts the folders,
+ * which is harmless because applying a snapshot entity twice is idempotent by version. Folders moved during a
+ * download may be seen twice or not at all here; the pull from the snapshot checkpoint replays those moves.
+ */
+async function fetchFolderRows(db: PrismaClient, wsId: string, after: string, take: number): Promise<Array<Row & { pos: string }>> {
+  const m = /^(\d{1,9}):(.+)$/.exec(after);
+  const afterDepth = m ? Number(m[1]) : -1;
+  const afterId = m ? m[2]! : "";
+  const ordered = await db.$queryRaw<Array<{ id: string; depth: number }>>`
+    WITH RECURSIVE tree AS (
+      SELECT f.id, 0 AS depth FROM folders f
+      WHERE f."workspaceId" = ${wsId}
+        AND (f."parentFolderId" IS NULL
+             OR NOT EXISTS (SELECT 1 FROM folders p WHERE p.id = f."parentFolderId" AND p."workspaceId" = ${wsId}))
+      UNION ALL
+      SELECT f.id, t.depth + 1 FROM folders f JOIN tree t ON f."parentFolderId" = t.id
+      WHERE f."workspaceId" = ${wsId} AND t.depth < 10000
+    )
+    SELECT id, depth FROM tree
+    WHERE depth > ${afterDepth} OR (depth = ${afterDepth} AND id > ${afterId})
+    ORDER BY depth, id
+    LIMIT ${take}`;
+  if (ordered.length === 0) return [];
+  const rows = await db.folder.findMany({ where: { workspaceId: wsId, id: { in: ordered.map((o) => o.id) } } });
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const out: Array<Row & { pos: string }> = [];
+  for (const o of ordered) {
+    const row = byId.get(o.id);
+    if (row) out.push({ ...row, pos: `${Number(o.depth)}:${o.id}` }); // deleted in between: skip, the pull replays it
+  }
+  return out;
+}
+
+async function fetchRows(db: PrismaClient, wsId: string, type: SyncResourceType, after: string, take: number): Promise<Array<Row & { pos?: string }>> {
   const idAfter = after ? { gt: after } : undefined;
   const args = { orderBy: { id: "asc" as const }, take };
   switch (type) {
     case "collection": return db.collection.findMany({ where: { workspaceId: wsId, id: idAfter }, ...args });
     case "environment": return db.environment.findMany({ where: { workspaceId: wsId, id: idAfter }, ...args });
-    case "folder": return db.folder.findMany({ where: { workspaceId: wsId, id: idAfter }, ...args });
+    case "folder": return fetchFolderRows(db, wsId, after, take);
     case "request": return db.request.findMany({ where: { workspaceId: wsId, id: idAfter }, ...args });
     case "environment_variable":
       return db.environmentVariable.findMany({ where: { environment: { workspaceId: wsId }, id: idAfter }, ...args });
@@ -105,7 +143,8 @@ export async function readSnapshotPage(
     const want = type === "collection_version" ? Math.min(remaining, VERSION_BATCH) : remaining;
     const rows = await fetchRows(db, wsId, type, cur.a, want + 1);
     for (const row of rows.slice(0, want)) {
-      const payload = shapePayload(type, syncPayload(type, row), features);
+      const { pos, ...data } = row;
+      const payload = shapePayload(type, syncPayload(type, data), features);
       const size = JSON.stringify(payload).length + 200;
       if (entities.length > 0 && bytes + size > PAGE_BYTES) {
         next = encodeCursor(cur);
@@ -113,7 +152,7 @@ export async function readSnapshotPage(
       }
       bytes += size;
       entities.push({ resource_type: type, resource_id: row.id, version: row.version, payload });
-      cur = { c: cur.c, t: cur.t, a: row.id };
+      cur = { c: cur.c, t: cur.t, a: pos ?? row.id };
     }
     if (rows.length > want) {
       next = encodeCursor(cur); // more rows of this type follow the last one returned

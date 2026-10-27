@@ -7,6 +7,7 @@ import { versionAuthor } from "../lib/dto.js";
 import { newId } from "../lib/ids.js";
 import { encryptSecret } from "../lib/crypto.js";
 import { assertVersionIfGiven, ensureUpdated } from "../lib/versioned.js";
+import { auditContentChange } from "./contentAudit.js";
 import { recordChange, type SyncResourceType } from "./syncLog.js";
 
 type Tx = Prisma.TransactionClient;
@@ -17,8 +18,12 @@ export type WriteCtx = {
   operationId?: string;
   baseVersion?: number;
   occurredAt?: Date;
-  /** The authenticated user performing the write; recorded as the author of a created collection version. */
+  /** The authenticated user performing the write: the author of a created collection version and of the audit entry. */
   actor?: Actor;
+  /** The HTTP request id, kept on the audit entry. */
+  requestId?: string | null;
+  /** Removed with a deleted parent: logged for sync, but the audit entry is the parent's (with counts). */
+  cascaded?: boolean;
 };
 /** Who performs a write (taken from the auth context, never from a request body). */
 export type Actor = { id: string; displayName: string };
@@ -225,14 +230,32 @@ export function syncPayload(type: SyncResourceType, row: unknown): Record<string
   }
 }
 
-async function log(tx: Tx, wsId: string, type: SyncResourceType, row: { id: string; version: number }, op: "upsert" | "delete", ctx: WriteCtx | undefined, payload?: Record<string, unknown>) {
+async function log(
+  tx: Tx, wsId: string, type: SyncResourceType, row: { id: string; version: number }, op: "upsert" | "delete", ctx: WriteCtx | undefined,
+  payload?: Record<string, unknown>, audit: { removed?: Record<string, number> } = {}
+) {
+  const after = op === "delete" ? null : (payload ?? syncPayload(type, row));
+  if (!ctx?.cascaded) {
+    // The item's previous state is its last sync-log payload (a delete leaves none behind).
+    const last = await tx.syncOperation.findFirst({
+      where: { workspaceId: wsId, resourceId: row.id, resourceType: type },
+      orderBy: { seq: "desc" },
+      select: { op: true, payload: true }
+    });
+    let before = last && last.op !== "delete" ? (last.payload as Record<string, unknown>) : null;
+    // A deleted parent row is complete: its own fields name it even without a sync-log entry.
+    if (!before && op === "delete" && "workspaceId" in row) before = syncPayload(type, row);
+    await auditContentChange(tx, wsId, type, row.id, before, after, {
+      actorUserId: ctx?.actor?.id ?? null, clientId: ctx?.clientId ?? null, requestId: ctx?.requestId ?? null
+    }, { ...audit, version: row.version });
+  }
   await recordChange(tx, wsId, {
     resourceType: type,
     resourceId: row.id,
     op,
     version: row.version,
     baseVersion: ctx?.baseVersion,
-    payload: payload ?? (op === "delete" ? {} : syncPayload(type, row)),
+    payload: after ?? {},
     clientId: ctx?.clientId,
     operationId: ctx?.operationId,
     occurredAt: ctx?.occurredAt
@@ -271,11 +294,14 @@ export async function deleteCollection(tx: Tx, wsId: string, id: string, expecte
     tx.collectionVariable.findMany({ where: { collectionId: id, workspaceId: wsId }, select: { id: true, version: true }, orderBy: { id: "asc" } })
   ]);
   await tx.collection.deleteMany({ where: { id, workspaceId: wsId } });
-  for (const v of variables) await log(tx, wsId, "collection_variable", v, "delete", ctx && { ...ctx, operationId: undefined });
-  for (const v of versions) await log(tx, wsId, "collection_version", v, "delete", ctx && { ...ctx, operationId: undefined });
-  for (const r of requests) await log(tx, wsId, "request", r, "delete", ctx && { ...ctx, operationId: undefined });
-  for (const f of folders) await log(tx, wsId, "folder", f, "delete", ctx && { ...ctx, operationId: undefined });
-  await log(tx, wsId, "collection", row, "delete", ctx);
+  const childCtx: WriteCtx = { ...ctx, operationId: undefined, cascaded: true };
+  for (const v of variables) await log(tx, wsId, "collection_variable", v, "delete", childCtx);
+  for (const v of versions) await log(tx, wsId, "collection_version", v, "delete", childCtx);
+  for (const r of requests) await log(tx, wsId, "request", r, "delete", childCtx);
+  for (const f of folders) await log(tx, wsId, "folder", f, "delete", childCtx);
+  await log(tx, wsId, "collection", row, "delete", ctx, undefined, {
+    removed: { folders: folders.length, requests: requests.length, versions: versions.length, variables: variables.length }
+  });
 }
 
 // ---------------------------------------------------------------- folders
@@ -353,10 +379,10 @@ export async function deleteFolder(tx: Tx, wsId: string, id: string, expected?: 
     orderBy: { id: "asc" }
   });
   await tx.folder.deleteMany({ where: { id, workspaceId: wsId } });
-  const childCtx = ctx && { ...ctx, operationId: undefined };
+  const childCtx: WriteCtx = { ...ctx, operationId: undefined, cascaded: true };
   for (const r of requests) await log(tx, wsId, "request", r, "delete", childCtx);
   for (const f of descendants) await log(tx, wsId, "folder", { id: f.id, version: Number(f.version) }, "delete", childCtx);
-  await log(tx, wsId, "folder", row, "delete", ctx);
+  await log(tx, wsId, "folder", row, "delete", ctx, undefined, { removed: { folders: descendants.length, requests: requests.length } });
 }
 
 // ---------------------------------------------------------------- requests
@@ -443,8 +469,9 @@ export async function deleteEnvironment(tx: Tx, wsId: string, id: string, expect
   assertVersionIfGiven(row, expected);
   const vars = await tx.environmentVariable.findMany({ where: { environmentId: id }, select: { id: true, version: true } });
   await tx.environment.deleteMany({ where: { id, workspaceId: wsId } });
-  for (const v of vars) await log(tx, wsId, "environment_variable", v, "delete", ctx && { ...ctx, operationId: undefined });
-  await log(tx, wsId, "environment", row, "delete", ctx);
+  const childCtx: WriteCtx = { ...ctx, operationId: undefined, cascaded: true };
+  for (const v of vars) await log(tx, wsId, "environment_variable", v, "delete", childCtx);
+  await log(tx, wsId, "environment", row, "delete", ctx, undefined, { removed: { variables: vars.length } });
 }
 
 // ---------------------------------------------------------------- variables (scoped through their environment)

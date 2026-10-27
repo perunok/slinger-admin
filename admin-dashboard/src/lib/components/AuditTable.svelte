@@ -2,7 +2,8 @@
   import { untrack } from 'svelte';
   import type { AuditLog, Page } from '../api/schemas';
   import { Paginator } from '../state/paginator.svelte';
-  import { formatDate, humanize } from '../format';
+  import { actionLabel, actorLabel, detailLines, searchText, targetLabel } from '../audit';
+  import { formatDate } from '../format';
   import { matches } from '../util';
   import ListState from './ListState.svelte';
   import LoadMore from './LoadMore.svelte';
@@ -17,6 +18,7 @@
 
   // Action names the server writes (server/README.md, "Authorization matrix"); the filter is sent as `action`.
   const WORKSPACE_ACTIONS = [
+    'content.created', 'content.updated', 'content.deleted', 'sync.push',
     'workspace.created', 'workspace.updated', 'workspace.deleted', 'workspace.published',
     'member.added', 'member.role_changed', 'member.removed',
     'invite.created', 'invite.revoked', 'invite.accepted',
@@ -28,8 +30,6 @@
     'user.password_changed',
   ];
   const ACTIONS = $derived(showWorkspace ? [...ADMIN_ACTIONS, ...WORKSPACE_ACTIONS] : WORKSPACE_ACTIONS);
-  /** `member.role_changed` -> "Member role changed" */
-  const actionLabel = (a: string) => humanize(a.replace('.', ' '));
 
   let action = $state('');
   let text = $state('');
@@ -38,10 +38,7 @@
     void action;
     untrack(() => void pager.load());
   });
-  const visible = $derived(
-    pager.items.filter((l) => matches(text, l.actor_email, l.actor_user_id, l.resource_id, l.resource_type, l.action)),
-  );
-  const details = (l: AuditLog) => (l.details && Object.keys(l.details).length ? JSON.stringify(l.details) : '');
+  const visible = $derived(pager.items.filter((l) => matches(text, searchText(l), l.actor_user_id, l.action)));
 </script>
 
 <div class="card flush">
@@ -55,7 +52,7 @@
     </div>
     <div class="field grow">
       <label for="audit-text">Find in loaded entries</label>
-      <input id="audit-text" class="input" type="search" placeholder="Actor, target…" bind:value={text} />
+      <input id="audit-text" class="input" type="search" placeholder="Person, item, change…" bind:value={text} />
     </div>
   </div>
   <ListState
@@ -76,10 +73,12 @@
             <tr>
               <td class="muted nowrap">{formatDate(l.created_at)}</td>
               <td><strong>{actionLabel(l.action)}</strong></td>
-              <td>{l.actor_email ?? l.actor_user_id ?? 'system'}</td>
-              <td>{#if l.resource_type}{humanize(l.resource_type)} {/if}<span class="mono muted">{l.resource_id ?? ''}</span></td>
+              <td>{actorLabel(l)}</td>
+              <td title={l.resource_id ?? undefined}>{targetLabel(l) || (l.resource_id ?? '')}</td>
               {#if showWorkspace}<td class="mono muted">{l.workspace_id ?? '—'}</td>{/if}
-              <td class="mono muted details">{details(l)}</td>
+              <td class="details">
+                {#each detailLines(l) as line, i (i)}<div>{line}</div>{/each}
+              </td>
             </tr>
           {/each}
         </tbody>
@@ -103,7 +102,8 @@
     white-space: nowrap;
   }
   .details {
-    max-width: 260px;
+    max-width: 360px;
     overflow-wrap: anywhere;
+    font-size: var(--text-sm, 0.875rem);
   }
 </style>

@@ -141,6 +141,15 @@ Authoritative design: `slinger/docs/SYNC_DESIGN.md` section 14. Server details a
 - **Push result shape** gains `reason`, `current_payload`, `conflicting_resource_id` on every rejected entry (see README table);
   `code` values are unchanged. Push body limit is 8 MiB (`SLINGER_SYNC_BODY_LIMIT_BYTES`); over it -> `413` with `details.reason = "too_large"`.
 - **Viewer push**: `403 workspace_access_denied` with `details.reason = "read_only"`; each push writes one `sync.push` audit row (summary only).
+- **Content audit** (since Slinger Cloud 0.6.0): every content change, from a sync push or the REST API, also writes one audit row
+  `content.created`, `content.updated` or `content.deleted` (`resource_type` = the sync resource type, `resource_id` = the item) with
+  `details`: `name` (name, variable key or version label), `collection` / `environment` (its container's name), `method` (requests),
+  `device` (the sync client's device name, sync pushes only), `changes` for an update (`{field, from?, to?}`: short fields such as
+  name, method, url, key, non-secret value and enabled with old and new values; documents, scripts, docs, auth and snapshots by name
+  only; a request document as the parts that changed: headers, body, auth, params, path variables, scripts, docs, examples) and,
+  for a deleted collection, folder or environment, `removed` (counts of the items deleted with it, which get no rows of their own).
+  Secret values never appear. The previous state is the item's last sync-log payload. Audit entries carry `actor_name` besides
+  `actor_email`.
 - **New endpoint** `GET /v1/workspaces/{workspaceId}/sync/snapshot?client_id&cursor&limit` (viewer+): `{checkpoint, entities:[{resource_type, resource_id, version, payload}], next_cursor}`.
   Entities come parents first: by type (collection, environment, folder, request, ...) and, within folders, by depth from the
   collection root, then id, so a nested folder never precedes its parent folder (older servers ordered folders by id

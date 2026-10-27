@@ -22,7 +22,7 @@ interface M { id: string; workspace_id: string; user_id: string; role: string; s
 interface I { id: string; workspace_id: string; email: string; role: string; status: string; invited_by_user_id?: string | null; expires_at: string | null; created_at: string; updated_at: string; version: number }
 interface J { id: string; workspace_id: string; requester_user_id: string; message: string; status: string; requested_role: string; created_at: string; updated_at: string; version: number }
 interface H { id: string; workspace_id: string; host: string; kind: string; status: string; tls_status: string; created_at: string; updated_at: string; version: number; token: string; checks: number }
-interface A { id: string; workspace_id: string | null; actor_user_id: string; actor_email: string; action: string; resource_type: string; resource_id: string; request_id: string; details: Json; created_at: string }
+interface A { id: string; workspace_id: string | null; actor_user_id: string; actor_email: string; actor_name?: string; action: string; resource_type: string; resource_id: string; request_id: string; details: Json; created_at: string }
 
 const PASSWORD = 'password-12345';
 const iso = (minsAgo: number) => new Date(Date.now() - minsAgo * 60_000).toISOString();
@@ -82,6 +82,18 @@ function seed(): Db {
     const wsId = n % 3 === 0 ? acme.id : workspaces[1 + (n % 5)]!.id;
     audit.push({ id: uid(), workspace_id: wsId, actor_user_id: sup.id, actor_email: sup.email, action: actions[n % actions.length]!, resource_type: 'membership', resource_id: users[5 + (n % 20)]!.id, request_id: `req-${n}`, details: n % 2 ? { to: 'editor' } : {}, created_at: iso(n * 37) });
   }
+  // Content changes (server services/contentAudit.ts): newest first in the seed.
+  const contentEditor = users[6]!;
+  const content: Array<Pick<A, 'action' | 'resource_type' | 'details'>> = [
+    { action: 'content.updated', resource_type: 'request', details: { name: 'List invoices', method: 'POST', collection: 'Billing API', device: 'Henok’s laptop', changes: [{ field: 'method', from: 'GET', to: 'POST' }, { field: 'url', from: '{{baseUrl}}/invoices', to: '{{baseUrl}}/v2/invoices' }, { field: 'headers' }, { field: 'body' }] } },
+    { action: 'content.updated', resource_type: 'environment_variable', details: { name: 'api_key', environment: 'Production', changes: [{ field: 'value' }] } },
+    { action: 'content.deleted', resource_type: 'folder', details: { name: 'Legacy', collection: 'Billing API', removed: { folders: 1, requests: 4 }, device: 'Henok’s laptop' } },
+    { action: 'content.created', resource_type: 'request', details: { name: 'Refund invoice', method: 'POST', collection: 'Billing API' } },
+    { action: 'sync.push', resource_type: 'workspace', details: { accepted: 6, rejected: 0, operations: 6 } },
+  ];
+  content.forEach((c, i) =>
+    audit.push({ id: uid(), workspace_id: acme.id, actor_user_id: contentEditor.id, actor_email: contentEditor.email, actor_name: 'Abebe Kebede', resource_id: uid(), request_id: `req-c${i}`, created_at: iso(i * 3), ...c }),
+  );
   return { users, workspaces, members, invites, joins, hosts, audit };
 }
 

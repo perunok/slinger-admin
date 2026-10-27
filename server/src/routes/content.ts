@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { prisma } from "../db.js";
 import { AppError } from "../lib/errors.js";
@@ -11,6 +11,12 @@ import {
 } from "../lib/dto.js";
 import { requireWorkspaceRole } from "../auth/middleware.js";
 import * as content from "../services/content.js";
+
+/** Who makes a REST content write: the author of the audit entry (and of a created collection version). */
+const writer = (req: FastifyRequest): content.WriteCtx => ({
+  actor: { id: req.auth!.user.id, displayName: req.auth!.user.displayName },
+  requestId: req.id
+});
 
 const id = z.string().min(1).max(64);
 const version = z.number().int().min(1);
@@ -37,7 +43,7 @@ export function registerContentRoutes(app: FastifyInstance): void {
     method: "GET", url: "/v1/workspaces/:workspaceId/collections", summary: "List collections", access: READ,
     tags: ["Content"], auth: "user", pre: [read], params: z.object(ws), query: paginationQuerySchema,
     responses: { 200: paged(collectionSchema) }, errors: [400, 401, 403, 404],
-    handler: async ({ params, query }) => {
+    handler: async ({ req, params, query }) => {
       const a = pageArgs(query);
       const rows = await prisma.collection.findMany({
         where: withCursor({ workspaceId: params.workspaceId }, a), orderBy: a.orderBy, take: a.take
@@ -50,14 +56,14 @@ export function registerContentRoutes(app: FastifyInstance): void {
     tags: ["Content"], auth: "user", pre: [write], params: z.object(ws), body: content.collectionData,
     responses: { 201: z.object({ collection: collectionSchema }) }, errors: [400, 401, 403, 404],
     handler: async ({ req, body }) => ({
-      collection: toCollection(await prisma.$transaction((tx) => content.createCollection(tx, wsId(req), body)))
+      collection: toCollection(await prisma.$transaction((tx) => content.createCollection(tx, wsId(req), body, writer(req))))
     })
   });
   defineRoute(app, {
     method: "GET", url: "/v1/workspaces/:workspaceId/collections/:collectionId", summary: "Get a collection",
     access: READ, tags: ["Content"], auth: "user", pre: [read], params: collectionParams,
     responses: { 200: z.object({ collection: collectionSchema }) }, errors: [401, 403, 404],
-    handler: async ({ params }) => {
+    handler: async ({ req, params }) => {
       const row = await prisma.collection.findFirst({ where: { id: params.collectionId, workspaceId: params.workspaceId } });
       if (!row) throw new AppError("not_found", "collection not found");
       return { collection: toCollection(row) };
@@ -68,10 +74,10 @@ export function registerContentRoutes(app: FastifyInstance): void {
     access: WRITE, tags: ["Content"], auth: "user", pre: [write], params: collectionParams,
     body: content.collectionData.partial().extend({ version }).strict(),
     responses: { 200: z.object({ collection: collectionSchema }) }, errors: [400, 401, 403, 404, 409],
-    handler: async ({ params, body }) => {
+    handler: async ({ req, params, body }) => {
       const { version: v, ...d } = body;
       return {
-        collection: toCollection(await prisma.$transaction((tx) => content.updateCollection(tx, params.workspaceId, params.collectionId, d, v)))
+        collection: toCollection(await prisma.$transaction((tx) => content.updateCollection(tx, params.workspaceId, params.collectionId, d, v, writer(req))))
       };
     }
   });
@@ -80,8 +86,8 @@ export function registerContentRoutes(app: FastifyInstance): void {
     summary: "Delete a collection (cascades to its folders and requests)", access: WRITE, tags: ["Content"],
     auth: "user", pre: [write], params: collectionParams, query: deleteQuery, responses: { 200: okSchema },
     errors: [401, 403, 404, 409],
-    handler: async ({ params, query }) => {
-      await prisma.$transaction((tx) => content.deleteCollection(tx, params.workspaceId, params.collectionId, query.version));
+    handler: async ({ req, params, query }) => {
+      await prisma.$transaction((tx) => content.deleteCollection(tx, params.workspaceId, params.collectionId, query.version, writer(req)));
       return ok();
     }
   });
@@ -91,7 +97,7 @@ export function registerContentRoutes(app: FastifyInstance): void {
     method: "GET", url: "/v1/workspaces/:workspaceId/collections/:collectionId/folders", summary: "List a collection's folders (ordered by sort_order, then id)",
     access: READ, tags: ["Content"], auth: "user", pre: [read], params: collectionParams, query: paginationQuerySchema,
     responses: { 200: paged(folderSchema) }, errors: [400, 401, 403, 404],
-    handler: async ({ params, query }) => {
+    handler: async ({ req, params, query }) => {
       const col = await prisma.collection.findFirst({ where: { id: params.collectionId, workspaceId: params.workspaceId } });
       if (!col) throw new AppError("not_found", "collection not found");
       const a = sortedPageArgs(query);
@@ -105,15 +111,15 @@ export function registerContentRoutes(app: FastifyInstance): void {
     method: "POST", url: "/v1/workspaces/:workspaceId/collections/:collectionId/folders", summary: "Create a folder",
     access: WRITE, tags: ["Content"], auth: "user", pre: [write], params: collectionParams, body: content.folderData,
     responses: { 201: z.object({ folder: folderSchema }) }, errors: [400, 401, 403, 404],
-    handler: async ({ params, body }) => ({
-      folder: toFolder(await prisma.$transaction((tx) => content.createFolder(tx, params.workspaceId, params.collectionId, body)))
+    handler: async ({ req, params, body }) => ({
+      folder: toFolder(await prisma.$transaction((tx) => content.createFolder(tx, params.workspaceId, params.collectionId, body, writer(req))))
     })
   });
   defineRoute(app, {
     method: "GET", url: "/v1/workspaces/:workspaceId/folders/:folderId", summary: "Get a folder", access: READ,
     tags: ["Content"], auth: "user", pre: [read], params: folderParams,
     responses: { 200: z.object({ folder: folderSchema }) }, errors: [401, 403, 404],
-    handler: async ({ params }) => {
+    handler: async ({ req, params }) => {
       const row = await prisma.folder.findFirst({ where: { id: params.folderId, workspaceId: params.workspaceId } });
       if (!row) throw new AppError("not_found", "folder not found");
       return { folder: toFolder(row) };
@@ -124,9 +130,9 @@ export function registerContentRoutes(app: FastifyInstance): void {
     tags: ["Content"], auth: "user", pre: [write], params: folderParams,
     body: content.folderData.partial().extend({ version }).strict(),
     responses: { 200: z.object({ folder: folderSchema }) }, errors: [400, 401, 403, 404, 409],
-    handler: async ({ params, body }) => {
+    handler: async ({ req, params, body }) => {
       const { version: v, ...d } = body;
-      return { folder: toFolder(await prisma.$transaction((tx) => content.updateFolder(tx, params.workspaceId, params.folderId, d, v))) };
+      return { folder: toFolder(await prisma.$transaction((tx) => content.updateFolder(tx, params.workspaceId, params.folderId, d, v, writer(req)))) };
     }
   });
   defineRoute(app, {
@@ -134,8 +140,8 @@ export function registerContentRoutes(app: FastifyInstance): void {
     summary: "Delete a folder (cascades to child folders and their requests)", access: WRITE, tags: ["Content"],
     auth: "user", pre: [write], params: folderParams, query: deleteQuery, responses: { 200: okSchema },
     errors: [401, 403, 404, 409],
-    handler: async ({ params, query }) => {
-      await prisma.$transaction((tx) => content.deleteFolder(tx, params.workspaceId, params.folderId, query.version));
+    handler: async ({ req, params, query }) => {
+      await prisma.$transaction((tx) => content.deleteFolder(tx, params.workspaceId, params.folderId, query.version, writer(req)));
       return ok();
     }
   });
@@ -147,7 +153,7 @@ export function registerContentRoutes(app: FastifyInstance): void {
     description: "Each version carries `created_by` ({id, display_name}, or null for a version created before authors were recorded; `id` is null once the author's account was deleted).",
     access: READ, tags: ["Content"], auth: "user", pre: [read], params: collectionParams, query: paginationQuerySchema,
     responses: { 200: paged(collectionVersionSchema) }, errors: [400, 401, 403, 404],
-    handler: async ({ params, query }) => {
+    handler: async ({ req, params, query }) => {
       const col = await prisma.collection.findFirst({ where: { id: params.collectionId, workspaceId: params.workspaceId } });
       if (!col) throw new AppError("not_found", "collection not found");
       const a = pageArgs(query);
@@ -165,9 +171,8 @@ export function registerContentRoutes(app: FastifyInstance): void {
     body: content.collectionVersionData.omit({ collection_id: true, created_at: true }),
     responses: { 201: z.object({ version: collectionVersionDetailSchema }) }, errors: [400, 401, 403, 404, 409],
     handler: async ({ req, params, body }) => {
-      const actor = { id: req.auth!.user.id, displayName: req.auth!.user.displayName };
       const row = await prisma.$transaction((tx) =>
-        content.createCollectionVersion(tx, params.workspaceId, newId(), { ...body, collection_id: params.collectionId }, { actor })
+        content.createCollectionVersion(tx, params.workspaceId, newId(), { ...body, collection_id: params.collectionId }, writer(req))
       );
       return { version: toCollectionVersionDetail(row) };
     }
@@ -176,7 +181,7 @@ export function registerContentRoutes(app: FastifyInstance): void {
     method: "GET", url: "/v1/workspaces/:workspaceId/collections/:collectionId/versions/:versionId",
     summary: "Get a collection version (with its snapshot)", access: READ, tags: ["Content"], auth: "user", pre: [read],
     params: collectionVersionParams, responses: { 200: z.object({ version: collectionVersionDetailSchema }) }, errors: [401, 403, 404],
-    handler: async ({ params }) => {
+    handler: async ({ req, params }) => {
       const row = await prisma.collectionVersion.findFirst({
         where: { id: params.versionId, collectionId: params.collectionId, workspaceId: params.workspaceId }
       });
@@ -191,7 +196,7 @@ export function registerContentRoutes(app: FastifyInstance): void {
     access: READ, tags: ["Content"], auth: "user", pre: [read], params: collectionParams,
     query: paginationQuerySchema.extend({ folder_id: id.optional() }),
     responses: { 200: paged(requestSchema) }, errors: [400, 401, 403, 404],
-    handler: async ({ params, query }) => {
+    handler: async ({ req, params, query }) => {
       const col = await prisma.collection.findFirst({ where: { id: params.collectionId, workspaceId: params.workspaceId } });
       if (!col) throw new AppError("not_found", "collection not found");
       const a = sortedPageArgs(query);
@@ -206,15 +211,15 @@ export function registerContentRoutes(app: FastifyInstance): void {
     method: "POST", url: "/v1/workspaces/:workspaceId/collections/:collectionId/requests", summary: "Create a request",
     access: WRITE, tags: ["Content"], auth: "user", pre: [write], params: collectionParams, body: content.requestData,
     responses: { 201: z.object({ request: requestSchema }) }, errors: [400, 401, 403, 404],
-    handler: async ({ params, body }) => ({
-      request: toRequest(await prisma.$transaction((tx) => content.createRequest(tx, params.workspaceId, params.collectionId, body)))
+    handler: async ({ req, params, body }) => ({
+      request: toRequest(await prisma.$transaction((tx) => content.createRequest(tx, params.workspaceId, params.collectionId, body, writer(req))))
     })
   });
   defineRoute(app, {
     method: "GET", url: "/v1/workspaces/:workspaceId/requests/:requestId", summary: "Get a request", access: READ,
     tags: ["Content"], auth: "user", pre: [read], params: requestParams,
     responses: { 200: z.object({ request: requestSchema }) }, errors: [401, 403, 404],
-    handler: async ({ params }) => {
+    handler: async ({ req, params }) => {
       const row = await prisma.request.findFirst({ where: { id: params.requestId, workspaceId: params.workspaceId } });
       if (!row) throw new AppError("not_found", "request not found");
       return { request: toRequest(row) };
@@ -225,17 +230,17 @@ export function registerContentRoutes(app: FastifyInstance): void {
     tags: ["Content"], auth: "user", pre: [write], params: requestParams,
     body: content.requestData.partial().extend({ version }).strict(),
     responses: { 200: z.object({ request: requestSchema }) }, errors: [400, 401, 403, 404, 409],
-    handler: async ({ params, body }) => {
+    handler: async ({ req, params, body }) => {
       const { version: v, ...d } = body;
-      return { request: toRequest(await prisma.$transaction((tx) => content.updateRequest(tx, params.workspaceId, params.requestId, d, v))) };
+      return { request: toRequest(await prisma.$transaction((tx) => content.updateRequest(tx, params.workspaceId, params.requestId, d, v, writer(req)))) };
     }
   });
   defineRoute(app, {
     method: "DELETE", url: "/v1/workspaces/:workspaceId/requests/:requestId", summary: "Delete a request", access: WRITE,
     tags: ["Content"], auth: "user", pre: [write], params: requestParams, query: deleteQuery, responses: { 200: okSchema },
     errors: [401, 403, 404, 409],
-    handler: async ({ params, query }) => {
-      await prisma.$transaction((tx) => content.deleteRequest(tx, params.workspaceId, params.requestId, query.version));
+    handler: async ({ req, params, query }) => {
+      await prisma.$transaction((tx) => content.deleteRequest(tx, params.workspaceId, params.requestId, query.version, writer(req)));
       return ok();
     }
   });
@@ -245,7 +250,7 @@ export function registerContentRoutes(app: FastifyInstance): void {
     method: "GET", url: "/v1/workspaces/:workspaceId/environments", summary: "List environments", access: READ,
     tags: ["Content"], auth: "user", pre: [read], params: z.object(ws), query: paginationQuerySchema,
     responses: { 200: paged(environmentSchema) }, errors: [400, 401, 403, 404],
-    handler: async ({ params, query }) => {
+    handler: async ({ req, params, query }) => {
       const a = pageArgs(query);
       const rows = await prisma.environment.findMany({
         where: withCursor({ workspaceId: params.workspaceId }, a), orderBy: a.orderBy, take: a.take
@@ -258,14 +263,14 @@ export function registerContentRoutes(app: FastifyInstance): void {
     tags: ["Content"], auth: "user", pre: [write], params: z.object(ws), body: content.environmentData,
     responses: { 201: z.object({ environment: environmentSchema }) }, errors: [400, 401, 403, 404],
     handler: async ({ req, body }) => ({
-      environment: toEnvironment(await prisma.$transaction((tx) => content.createEnvironment(tx, wsId(req), body)))
+      environment: toEnvironment(await prisma.$transaction((tx) => content.createEnvironment(tx, wsId(req), body, writer(req))))
     })
   });
   defineRoute(app, {
     method: "GET", url: "/v1/workspaces/:workspaceId/environments/:environmentId", summary: "Get an environment",
     access: READ, tags: ["Content"], auth: "user", pre: [read], params: envParams,
     responses: { 200: z.object({ environment: environmentSchema }) }, errors: [401, 403, 404],
-    handler: async ({ params }) => {
+    handler: async ({ req, params }) => {
       const row = await prisma.environment.findFirst({ where: { id: params.environmentId, workspaceId: params.workspaceId } });
       if (!row) throw new AppError("not_found", "environment not found");
       return { environment: toEnvironment(row) };
@@ -276,10 +281,10 @@ export function registerContentRoutes(app: FastifyInstance): void {
     access: WRITE, tags: ["Content"], auth: "user", pre: [write], params: envParams,
     body: content.environmentData.partial().extend({ version }).strict(),
     responses: { 200: z.object({ environment: environmentSchema }) }, errors: [400, 401, 403, 404, 409],
-    handler: async ({ params, body }) => {
+    handler: async ({ req, params, body }) => {
       const { version: v, ...d } = body;
       return {
-        environment: toEnvironment(await prisma.$transaction((tx) => content.updateEnvironment(tx, params.workspaceId, params.environmentId, d, v)))
+        environment: toEnvironment(await prisma.$transaction((tx) => content.updateEnvironment(tx, params.workspaceId, params.environmentId, d, v, writer(req))))
       };
     }
   });
@@ -287,8 +292,8 @@ export function registerContentRoutes(app: FastifyInstance): void {
     method: "DELETE", url: "/v1/workspaces/:workspaceId/environments/:environmentId",
     summary: "Delete an environment and its variables", access: WRITE, tags: ["Content"], auth: "user", pre: [write],
     params: envParams, query: deleteQuery, responses: { 200: okSchema }, errors: [401, 403, 404, 409],
-    handler: async ({ params, query }) => {
-      await prisma.$transaction((tx) => content.deleteEnvironment(tx, params.workspaceId, params.environmentId, query.version));
+    handler: async ({ req, params, query }) => {
+      await prisma.$transaction((tx) => content.deleteEnvironment(tx, params.workspaceId, params.environmentId, query.version, writer(req)));
       return ok();
     }
   });
@@ -299,7 +304,7 @@ export function registerContentRoutes(app: FastifyInstance): void {
     summary: "List variables (secret values are masked server-side: `value` null, `masked_value` set)", access: READ,
     tags: ["Content"], auth: "user", pre: [read], params: envParams, query: paginationQuerySchema,
     responses: { 200: paged(variableSchema) }, errors: [400, 401, 403, 404],
-    handler: async ({ params, query }) => {
+    handler: async ({ req, params, query }) => {
       const env = await prisma.environment.findFirst({ where: { id: params.environmentId, workspaceId: params.workspaceId } });
       if (!env) throw new AppError("not_found", "environment not found");
       const a = pageArgs(query);
@@ -319,10 +324,10 @@ export function registerContentRoutes(app: FastifyInstance): void {
     body: content.variableData.extend({ version: version.optional() }).strict(),
     responses: { 200: z.object({ variable: variableSchema }), 201: z.object({ variable: variableSchema }) },
     errors: [400, 401, 403, 404, 409],
-    handler: async ({ reply, params, body }) => {
+    handler: async ({ req, reply, params, body }) => {
       const { version: v, ...d } = body;
       const { row, created } = await prisma.$transaction((tx) =>
-        content.putVariable(tx, params.workspaceId, params.environmentId, params.key, d, secret, v)
+        content.putVariable(tx, params.workspaceId, params.environmentId, params.key, d, secret, v, writer(req))
       );
       reply.code(created ? 201 : 200);
       return { variable: toVariable(row) };
@@ -332,9 +337,9 @@ export function registerContentRoutes(app: FastifyInstance): void {
     method: "DELETE", url: "/v1/workspaces/:workspaceId/environments/:environmentId/variables/:key",
     summary: "Delete a variable", access: WRITE, tags: ["Content"], auth: "user", pre: [write], params: varParams,
     query: deleteQuery, responses: { 200: okSchema }, errors: [401, 403, 404, 409],
-    handler: async ({ params, query }) => {
+    handler: async ({ req, params, query }) => {
       await prisma.$transaction((tx) =>
-        content.deleteVariable(tx, params.workspaceId, params.environmentId, params.key, query.version)
+        content.deleteVariable(tx, params.workspaceId, params.environmentId, params.key, query.version, writer(req))
       );
       return ok();
     }

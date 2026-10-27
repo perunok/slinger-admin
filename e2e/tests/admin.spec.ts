@@ -439,7 +439,7 @@ test('audit logs: platform and workspace views, newest first, actor emails, acti
   await page.getByLabel('Action').selectOption('member.role_changed');
   await expect(rows).not.toHaveCount(0);
   for (const t of await rows.allTextContents()) expect(t).toContain('Member role changed');
-  await expect(page.getByText(/"to":"editor"/).first()).toBeVisible();
+  await expect(page.getByText(/^To: editor$/).first()).toBeVisible(); // details as readable lines, not JSON
 
   await page.goto(`/#/workspaces/${wsId}/audit`);
   await page.getByLabel('Action').selectOption('member.added');

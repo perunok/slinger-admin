@@ -166,7 +166,8 @@ export const auditLogSchema = z.object({
   workspace_id: z.string().nullish(),
   actor_user_id: z.string().nullish(),
   actor_email: z.string().nullish(),
-  /** Dotted names such as `member.role_changed`, `invite.created`, `admin.user_created`. */
+  actor_name: z.string().nullish(),
+  /** Dotted names such as `member.role_changed`, `invite.created`, `admin.user_created`, `content.updated`. */
   action: z.string(),
   resource_type: z.string().nullish(),
   resource_id: z.string().nullish(),

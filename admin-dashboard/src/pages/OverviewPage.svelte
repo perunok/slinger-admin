@@ -5,6 +5,7 @@
   import { errorMessage } from '../lib/api/errors';
   import { hashHref, paths } from '../lib/state/router.svelte';
   import { formatDate, humanize, statusTone } from '../lib/format';
+  import { actionLabel, actorLabel, targetLabel } from '../lib/audit';
   import Badge from '../lib/components/Badge.svelte';
   import Button from '../lib/components/Button.svelte';
 
@@ -110,8 +111,8 @@
       <ul class="recent">
         {#each recent.value as log (log.id)}
           <li>
-            <strong>{humanize(log.action.replace('.', ' '))}</strong>
-            <span class="muted">{log.actor_email ?? log.actor_user_id ?? 'system'} · {formatDate(log.created_at)}</span>
+            <strong>{actionLabel(log.action)}</strong>{#if targetLabel(log)} {targetLabel(log)}{/if}
+            <span class="muted">{actorLabel(log)} · {formatDate(log.created_at)}</span>
           </li>
         {/each}
       </ul>

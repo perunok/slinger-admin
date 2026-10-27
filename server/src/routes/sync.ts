@@ -250,7 +250,7 @@ export function registerSyncRoutes(app: FastifyInstance): void {
           continue;
         }
         try {
-          const version = await prisma.$transaction((tx) => applyOperation(tx, wsId, client.id, op, secret, { id: req.auth!.user.id, displayName: req.auth!.user.displayName }));
+          const version = await prisma.$transaction((tx) => applyOperation(tx, wsId, client.id, op, secret, { id: req.auth!.user.id, displayName: req.auth!.user.displayName }, req.id));
           accepted.push({ operation_id: op.operation_id, resource_id: op.resource_id, resulting_version: version });
         } catch (err) {
           const code = (err as { code?: string }).code;

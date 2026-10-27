@@ -62,10 +62,12 @@ export async function applyOperation(
   clientId: string,
   op: IncomingOp,
   signingSecret: string,
-  actor?: c.Actor
+  actor?: c.Actor,
+  requestId?: string
 ): Promise<number> {
   const ctx: c.WriteCtx = {
     actor,
+    requestId,
     clientId,
     operationId: op.operation_id,
     baseVersion: op.base_version,

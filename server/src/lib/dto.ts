@@ -86,7 +86,7 @@ export const variableSchema = z.object({
   is_secret: z.boolean(), created_at: ts, updated_at: ts, version: z.number().int()
 });
 export const auditLogSchema = z.object({
-  id, actor_user_id: id.nullable(), actor_email: z.string().nullable(), action: z.string(), resource_type: z.string(), resource_id: z.string(),
+  id, actor_user_id: id.nullable(), actor_email: z.string().nullable(), actor_name: z.string().nullable(), action: z.string(), resource_type: z.string(), resource_id: z.string(),
   workspace_id: id.nullable(), request_id: z.string().nullable(), details: z.record(z.unknown()), created_at: ts
 });
 export const pageSchema = z.object({ next_cursor: z.string().nullable(), has_more: z.boolean() });
@@ -162,8 +162,8 @@ export const toVariable = (v: EnvironmentVariable) => ({
   value: v.isSecret ? null : v.value, masked_value: v.isSecret ? SECRET_MASK : null,
   is_secret: v.isSecret, created_at: iso(v.createdAt), updated_at: iso(v.updatedAt), version: v.version
 });
-export const toAuditLog = (a: AuditLog & { actor: Pick<User, "email"> | null }) => ({
-  id: a.id, actor_user_id: a.actorUserId, actor_email: a.actor?.email ?? null, action: a.action, resource_type: a.resourceType,
+export const toAuditLog = (a: AuditLog & { actor: Pick<User, "email" | "displayName"> | null }) => ({
+  id: a.id, actor_user_id: a.actorUserId, actor_email: a.actor?.email ?? null, actor_name: a.actor?.displayName ?? null, action: a.action, resource_type: a.resourceType,
   resource_id: a.resourceId, workspace_id: a.workspaceId, request_id: a.requestId,
   details: (a.details ?? {}) as Record<string, unknown>, created_at: iso(a.createdAt)
 });

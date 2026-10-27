@@ -453,6 +453,8 @@ model SyncOperation {
 
   @@unique([workspaceId, operationId])
   @@index([workspaceId, seq])
+  // The audit log reads an item's previous payload: its last entry.
+  @@index([workspaceId, resourceId, seq])
   @@map("sync_operations")
 }
 
